@@ -21,11 +21,16 @@
 #define LWIP_SO_RCVTIMEO 1
 #endif
 
+/* TCP WND must be at least 16 kb to match TLS record size
+   or you will get a warning "altcp_tls: TCP_WND is smaller than the RX decrypion buffer, connection RX might stall!" */
+#undef TCP_WND
+#define TCP_WND  16384
+
 #define LWIP_ALTCP 1
 
-// // If you don't want to use TLS (just a http request) you can avoid linking to mbedtls and remove the following
-// #define LWIP_ALTCP_TLS           1
-// #define LWIP_ALTCP_TLS_MBEDTLS   1
+// If you don't want to use TLS (just a http request) you can avoid linking to mbedtls and remove the following
+#define LWIP_ALTCP_TLS           1
+#define LWIP_ALTCP_TLS_MBEDTLS   1
 
 // Note bug in lwip with LWIP_ALTCP and LWIP_DEBUG
 // https://savannah.nongnu.org/bugs/index.php?62159

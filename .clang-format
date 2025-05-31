@@ -1,0 +1,8 @@
+# .clang-format
+BasedOnStyle: LLVM  # Or your preferred base style (Google, WebKit, etc.)
+IndentWidth: 4      # Desired visual indentation width (e.g., 4 columns)
+TabWidth: 4         # Crucial: Set this to the same value as IndentWidth
+                    # if you want one tab character per indentation level.
+UseTab: ForIndentation # This is the key setting to use tabs for indentation.
+                    # Alternatively, 'Always' uses tabs for both indentation and alignment
+                    # if the alignment can be done with tabs. 'ForIndentation' is usually preferred.

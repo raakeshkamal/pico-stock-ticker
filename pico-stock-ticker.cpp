@@ -1,33 +1,4 @@
-#include "hardware/spi.h"
-#include "pico/cyw43_arch.h"
-#include "pico/stdlib.h"
-#include <cstdint>
-#include <cstdio>
-#include <cyw43.h>
-#include <stdio.h>
-
-#include <cstdlib>
-#include <math.h>
-#include <string.h>
-#include <vector>
-
-#include "FreeRTOS.h"
-#include "task.h"
-
-#include "button.hpp"
-#include "drivers/st7789/st7789.hpp"
-#include "libraries/pico_display_2/pico_display_2.hpp"
-#include "libraries/pico_graphics/pico_graphics.hpp"
-#include "rgbled.hpp"
-
-const char *ssid = WIFI_SSID;
-const char *password = WIFI_PASSWORD;
-
-const uint32_t SPI_FREQ = 1000 * 1000;
-const uint32_t timeout = 30000;
-
-const uint32_t LED_DELAY = 100;
-
+#include "pico-stock-ticker.hpp"
 using namespace pimoroni;
 
 ST7789 st7789(320, 240, ROTATE_0, false, get_spi_pins(BG_SPI_FRONT));
@@ -40,15 +11,10 @@ Button button_b(PicoDisplay2::B);
 Button button_x(PicoDisplay2::X);
 Button button_y(PicoDisplay2::Y);
 
-// Priorities of our threads - higher numbers are higher priority
-#define MAIN_TASK_PRIORITY (tskIDLE_PRIORITY + 2UL)
-#define BLINK_TASK_PRIORITY (tskIDLE_PRIORITY + 1UL)
-#define WIFI_TASK_PRIORITY (tskIDLE_PRIORITY + 4UL)
+static const uint8_t cert_ok[] = ROOT_CERT;
 
-// Stack sizes of our threads in words (4 bytes)
-#define MAIN_TASK_STACK_SIZE configMINIMAL_STACK_SIZE
-#define BLINK_TASK_STACK_SIZE configMINIMAL_STACK_SIZE
-#define WIFI_TASK_STACK_SIZE configMINIMAL_STACK_SIZE
+// TODO: Add handlers for RTOS erros
+// TODO: Add Sleep handler
 
 // Turn led on or off
 static void pico_set_led(bool led_on) {
@@ -68,12 +34,15 @@ void blink_task(__unused void *params) {
 		}
 		pico_set_led(on);
 		on = !on;
-		sleep_ms(LED_DELAY);
+		sleep_ms(LED_DELAY); // TODO: vary the LED with WiFi Connection
 	}
 }
 
 void wifi_task(__unused void *params) {
 	printf("wifi_task starts\n");
+
+	// Enable wifi station
+	cyw43_arch_enable_sta_mode();
 
 	while (true) {
 		static int last_core_id = -1;
@@ -109,14 +78,29 @@ void wifi_task(__unused void *params) {
 		if (status == CYW43_LINK_FAIL || status == CYW43_LINK_DOWN ||
 		    status == CYW43_LINK_NONET) {
 			printf("Retrying...\n");
-			cyw43_arch_wifi_connect_timeout_ms(ssid, password,
-			                                   CYW43_AUTH_WPA2_AES_PSK, timeout);
+			cyw43_arch_wifi_connect_timeout_ms(
+			    ssid, password, CYW43_AUTH_WPA2_AES_PSK, timeout);
 		} else if (status == CYW43_LINK_JOIN) {
 			printf("Connected.\n");
 			// Read the ip address in a human readable way
-			static uint8_t *ip_address = (uint8_t *)&(cyw43_state.netif[0].ip_addr.addr);
+			static uint8_t *ip_address =
+			    (uint8_t *)&(cyw43_state.netif[0].ip_addr.addr);
 			printf("IP address %d.%d.%d.%d\n", ip_address[0], ip_address[1],
 			       ip_address[2], ip_address[3]);
+			static EXAMPLE_HTTP_REQUEST_T req = {0};
+			req.hostname = HOST;
+			req.url = URL_REQUEST;
+			req.headers_fn = http_client_header_print_fn;
+			req.recv_fn = http_client_receive_print_fn;
+			req.result_fn = http_client_result_print_fn;
+			req.tls_config =
+			    altcp_tls_create_config_client(cert_ok, sizeof(cert_ok));
+			int pass =
+			    http_client_request_sync(cyw43_arch_async_context(), &req);
+			altcp_tls_free_config(req.tls_config);
+			if (pass != 0) {
+				printf("test failed\n");
+			}
 		} else {
 			break; // * Error Unrecoverable. Kill the task
 		}
@@ -128,13 +112,12 @@ void wifi_task(__unused void *params) {
 }
 
 void main_task(__unused void *params) {
+
 	// Initialise the Wi-Fi chip
 	if (cyw43_arch_init()) {
 		printf("Wi-Fi init failed\n");
 		return;
 	}
-	// Enable wifi station
-	cyw43_arch_enable_sta_mode();
 
 	// start the led blinking
 	xTaskCreate(blink_task, "BlinkThread", BLINK_TASK_STACK_SIZE, NULL,
@@ -226,8 +209,11 @@ void main_task(__unused void *params) {
 
 		// update screen
 		st7789.update(&graphics);
-		vTaskDelay(10);
+		vTaskDelay(10); // TODO: create var
 	}
+
+	cyw43_arch_deinit();
+	vTaskDelete(NULL);
 }
 
 void vLaunch(void) {

@@ -41,8 +41,10 @@ add_subdirectory(libraries)
 add_subdirectory(mandelbrot)
 
 # Add executable. Default name is the project name, version 0.1
-
-add_executable(pico-stock-ticker pico-stock-ticker.cpp )
+add_executable(pico-stock-ticker
+        pico-stock-ticker.cpp
+        example_http_client_util.c
+        )
 
 pico_set_program_name(pico-stock-ticker "pico-stock-ticker")
 pico_set_program_version(pico-stock-ticker "0.1")
@@ -53,23 +55,10 @@ pico_enable_stdio_usb(pico-stock-ticker 1)
 
 # Add the standard library to the build
 target_link_libraries(pico-stock-ticker
-        pico_stdlib)
-
-# Add the standard include files to the build
-target_include_directories(pico-stock-ticker PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}/..
-)
-
-target_compile_definitions(pico-stock-ticker PRIVATE
-        NO_SYS=0 # don't want NO_SYS (generally this would be in your lwipopts.h)
-        CYW43_TASK_STACK_SIZE=2048
-        WIFI_SSID=\"${WIFI_SSID}\"
-        WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
-        )
-
-# Add any user requested libraries
-target_link_libraries(pico-stock-ticker 
+        pico_lwip_http
+        pico_lwip_mbedtls
+        pico_mbedtls
+        pico_stdlib
         hardware_spi
         hardware_pwm
         hardware_dma
@@ -80,6 +69,27 @@ target_link_libraries(pico-stock-ticker
         pico_graphics
         pico_display_2
         pico_cyw43_arch_lwip_sys_freertos
+        )
+
+# Add the standard include files to the build
+target_include_directories(pico-stock-ticker PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/..
+)
+
+target_compile_definitions(pico-stock-ticker PRIVATE
+        NO_SYS=0 # don't want NO_SYS (generally this would be in your lwipopts.h)
+        ALTCP_MBEDTLS_AUTHMODE=MBEDTLS_SSL_VERIFY_REQUIRED
+        CYW43_TASK_STACK_SIZE=2048
+        WIFI_SSID=\"${WIFI_SSID}\"
+        WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
+        )
+
+# Ignore warnings from lwip code
+set_source_files_properties(
+        ${PICO_LWIP_PATH}/src/apps/altcp_tls/altcp_tls_mbedtls.c
+        PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-result"
         )
 
 pico_add_extra_outputs(pico-stock-ticker)
