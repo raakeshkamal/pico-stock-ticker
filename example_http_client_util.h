@@ -73,6 +73,8 @@ typedef struct EXAMPLE_HTTP_REQUEST {
      */
     httpc_result_t result;
 
+    void *user_semaphore;
+
 } EXAMPLE_HTTP_REQUEST_T;
 
 struct async_context;

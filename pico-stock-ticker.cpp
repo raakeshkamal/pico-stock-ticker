@@ -13,6 +13,10 @@ Button button_y(PicoDisplay2::Y);
 
 static const uint8_t cert_ok[] = ROOT_CERT;
 
+static EXAMPLE_HTTP_REQUEST_T async_http_request_state;
+static SemaphoreHandle_t http_request_complete_sem = NULL;
+static SemaphoreHandle_t wifi_connected_sem = NULL; // To signal HTTP task
+
 // TODO: Add handlers for RTOS erros
 // TODO: Add Sleep handler
 
@@ -38,11 +42,110 @@ void blink_task(__unused void *params) {
 	}
 }
 
+static void http_client_async_result_cb(void *arg, httpc_result_t httpc_result,
+                                        u32_t rx_content_len, u32_t srv_res,
+                                        err_t err) {
+	EXAMPLE_HTTP_REQUEST_T *req = (EXAMPLE_HTTP_REQUEST_T *)arg;
+	printf("Async HTTP request finished.\n");
+	printf("HTTP Result: %d\n", httpc_result);
+	printf("Received Content Length: %lu\n", rx_content_len);
+	printf("Server Response Code: %lu\n", srv_res);
+	printf("LwIP Error: %d\n", err);
+
+	if (req->user_semaphore != NULL) {
+		xSemaphoreGiveFromISR((SemaphoreHandle_t)req->user_semaphore, NULL);
+	}
+}
+
+void http_get_task(__unused void *params) {
+	printf("http_get_task starts\n");
+
+	printf("http_get_task: Waiting for Wi-Fi connection...\n");
+	xSemaphoreTake(wifi_connected_sem, portMAX_DELAY);
+	printf("http_get_task: Wi-Fi connected. Proceeding with HTTP requests.\n");
+
+	while (true) {
+		static int last_core_id = -1;
+		if (portGET_CORE_ID() != last_core_id) {
+			last_core_id = portGET_CORE_ID();
+			printf("http_get_task is on core %d\n", last_core_id);
+		}
+
+		memset(&async_http_request_state, 0, sizeof(async_http_request_state));
+		async_http_request_state.hostname = HOST;
+		async_http_request_state.url = URL_REQUEST;
+		async_http_request_state.headers_fn = http_client_header_print_fn;
+		async_http_request_state.recv_fn = http_client_receive_print_fn;
+		async_http_request_state.result_fn = http_client_async_result_cb;
+		async_http_request_state.callback_arg = &async_http_request_state;
+		async_http_request_state.user_semaphore = http_request_complete_sem;
+
+		async_http_request_state.tls_config =
+		    altcp_tls_create_config_client(cert_ok, sizeof(cert_ok));
+		if (async_http_request_state.tls_config == NULL) {
+			printf("http_get_task: Failed to create TLS config\n");
+			vTaskDelay(pdMS_TO_TICKS(5000)); // Wait before retrying
+			continue;
+		}
+
+		printf(
+		    "http_get_task: Starting asynchronous HTTPS GET request to %s%s\n",
+		    async_http_request_state.hostname, async_http_request_state.url);
+
+		xSemaphoreTake(http_request_complete_sem, 0);
+
+		err_t err = http_client_request_async(cyw43_arch_async_context(),
+		                                      &async_http_request_state);
+
+		if (err != ERR_OK) {
+			printf("http_get_task: Failed to start async HTTP request: %d\n",
+			       err);
+			altcp_tls_free_config(async_http_request_state.tls_config);
+			async_http_request_state.tls_config = NULL;
+		} else {
+			printf("http_get_task: Async request initiated. Waiting for "
+			       "completion semaphore...\n");
+			// Wait for the callback to signal completion, with a timeout
+			if (xSemaphoreTake(http_request_complete_sem,
+			                   pdMS_TO_TICKS(30000)) == pdTRUE) {
+				printf(
+				    "http_get_task: Semaphore received. Request completed.\n");
+				if (async_http_request_state.result == HTTPC_RESULT_OK &&
+				    async_http_request_state.complete) {
+					printf("http_get_task: Request successful!\n");
+				} else {
+					printf("http_get_task: Request failed or incomplete. "
+					       "Result: %d, Complete: %d\n",
+					       async_http_request_state.result,
+					       async_http_request_state.complete);
+				}
+			} else {
+				printf("http_get_task: HTTP request timed out!\n");
+			}
+			if (async_http_request_state.tls_config) {
+				altcp_tls_free_config(async_http_request_state.tls_config);
+				async_http_request_state.tls_config = NULL;
+			}
+		}
+
+		// Delay before making the next request
+		printf(
+		    "http_get_task: Waiting for 60 seconds before next request...\n");
+		vTaskDelay(pdMS_TO_TICKS(60000));
+	}
+
+	vSemaphoreDelete(http_request_complete_sem);
+	vTaskDelete(NULL);
+}
+
 void wifi_task(__unused void *params) {
 	printf("wifi_task starts\n");
 
 	// Enable wifi station
 	cyw43_arch_enable_sta_mode();
+
+	bool notified_http_task =
+	    false; // Ensure we only signal once per connection
 
 	while (true) {
 		static int last_core_id = -1;
@@ -56,12 +159,20 @@ void wifi_task(__unused void *params) {
 		switch (status) {
 		case CYW43_LINK_JOIN:
 			printf("WiFi is connected\n");
+			if (!notified_http_task && wifi_connected_sem != NULL) {
+				printf("wifi_task: Signaling http_get_task that Wi-Fi is "
+				       "connected.\n");
+				xSemaphoreGive(wifi_connected_sem);
+				notified_http_task = true;
+			}
 			break;
 		case CYW43_LINK_DOWN:
 			printf("WiFi disconnected\n");
+			notified_http_task = false; // Allow re-notification on next connect
 			break;
 		case CYW43_LINK_FAIL:
 			printf("Connection failed\n");
+			notified_http_task = false;
 			break;
 		case CYW43_LINK_NONET:
 			printf("WiFi not found\n");
@@ -87,25 +198,11 @@ void wifi_task(__unused void *params) {
 			    (uint8_t *)&(cyw43_state.netif[0].ip_addr.addr);
 			printf("IP address %d.%d.%d.%d\n", ip_address[0], ip_address[1],
 			       ip_address[2], ip_address[3]);
-			static EXAMPLE_HTTP_REQUEST_T req = {0};
-			req.hostname = HOST;
-			req.url = URL_REQUEST;
-			req.headers_fn = http_client_header_print_fn;
-			req.recv_fn = http_client_receive_print_fn;
-			req.result_fn = http_client_result_print_fn;
-			req.tls_config =
-			    altcp_tls_create_config_client(cert_ok, sizeof(cert_ok));
-			int pass =
-			    http_client_request_sync(cyw43_arch_async_context(), &req);
-			altcp_tls_free_config(req.tls_config);
-			if (pass != 0) {
-				printf("test failed\n");
-			}
 		} else {
 			break; // * Error Unrecoverable. Kill the task
 		}
 
-		vTaskDelay(1000);
+		vTaskDelay(pdMS_TO_TICKS(status == CYW43_LINK_JOIN ? 10000 : 1000));
 	}
 
 	vTaskDelete(NULL);
@@ -119,11 +216,30 @@ void main_task(__unused void *params) {
 		return;
 	}
 
+	// Create semaphores before starting tasks that use them
+	http_request_complete_sem = xSemaphoreCreateBinary();
+	if (http_request_complete_sem == NULL) {
+		printf("Failed to create http_request_complete_sem\n");
+	}
+
+	wifi_connected_sem = xSemaphoreCreateBinary();
+	if (wifi_connected_sem == NULL) {
+		printf("Failed to create wifi_connected_sem\n");
+	}
+
 	// start the led blinking
 	xTaskCreate(blink_task, "BlinkThread", BLINK_TASK_STACK_SIZE, NULL,
 	            BLINK_TASK_PRIORITY, NULL);
 	xTaskCreate(wifi_task, "WiFiThread", WIFI_TASK_STACK_SIZE, NULL,
 	            WIFI_TASK_PRIORITY, NULL);
+
+	if (http_request_complete_sem != NULL && wifi_connected_sem != NULL) {
+		xTaskCreate(http_get_task, "HTTPGetThread", HTTP_GET_TASK_STACK_SIZE,
+		            NULL, HTTP_GET_TASK_PRIORITY, NULL);
+	} else {
+		printf(
+		    "Not starting HTTPGetThread due to semaphore creation failure.\n");
+	}
 
 	st7789.set_backlight(255);
 
