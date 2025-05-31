@@ -79,10 +79,11 @@ target_include_directories(pico-stock-ticker PRIVATE
 
 target_compile_definitions(pico-stock-ticker PRIVATE
         NO_SYS=0 # don't want NO_SYS (generally this would be in your lwipopts.h)
-        ALTCP_MBEDTLS_AUTHMODE=MBEDTLS_SSL_VERIFY_REQUIRED
+        # ALTCP_MBEDTLS_AUTHMODE=MBEDTLS_SSL_VERIFY_REQUIRED
         CYW43_TASK_STACK_SIZE=2048
         WIFI_SSID=\"${WIFI_SSID}\"
         WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
+        API_KEY=\"${API_KEY}\"
         )
 
 # Ignore warnings from lwip code

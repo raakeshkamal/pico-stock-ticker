@@ -17,8 +17,37 @@ static EXAMPLE_HTTP_REQUEST_T async_http_request_state;
 static SemaphoreHandle_t http_request_complete_sem = NULL;
 static SemaphoreHandle_t wifi_connected_sem = NULL; // To signal HTTP task
 
-// TODO: Add handlers for RTOS erros
-// TODO: Add Sleep handler
+
+volatile uint32_t ulIdleCycleCount = 0UL;
+
+void vApplicationIdleHook( void )
+{
+    ulIdleCycleCount++;
+
+    /* Example: Enter a low-power sleep mode.
+     * The specifics of HAL_PWR_EnterSLEEPMode are MCU-dependent.
+     * Ensure interrupts can wake the MCU.
+     */
+    // HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+}
+
+void vApplicationStackOverflowHook( TaskHandle_t xTask, char *pcTaskName )
+{
+    ( void ) pcTaskName;
+    ( void ) xTask;
+
+    taskDISABLE_INTERRUPTS();
+    printf("Stack overflow in task: %s\n", pcTaskName);
+    for( ;; );
+}
+
+void vApplicationMallocFailedHook( void )
+{
+    taskDISABLE_INTERRUPTS();
+    printf("Malloc failed!\n");
+    for( ;; );
+}
+
 
 // Turn led on or off
 static void pico_set_led(bool led_on) {
