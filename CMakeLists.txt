@@ -43,7 +43,6 @@ add_subdirectory(mandelbrot)
 # Add executable. Default name is the project name, version 0.1
 add_executable(pico-stock-ticker
         pico-stock-ticker.cpp
-        example_http_client_util.c
         )
 
 pico_set_program_name(pico-stock-ticker "pico-stock-ticker")

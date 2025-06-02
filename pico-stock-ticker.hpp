@@ -22,7 +22,6 @@
 #include "rgbled.hpp"
 
 #include "lwip/netif.h"
-#include "example_http_client_util.h"
 #include "lwip/altcp_tls.h"
 
 const char *ssid = WIFI_SSID;
