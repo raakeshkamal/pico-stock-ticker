@@ -1,4 +1,5 @@
 build
 .cache
 secrets.cmake
-.venv
+*.venv
+*certs
