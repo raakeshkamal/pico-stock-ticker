@@ -43,6 +43,7 @@ add_subdirectory(mandelbrot)
 # Add executable. Default name is the project name, version 0.1
 add_executable(pico-stock-ticker
         pico-stock-ticker.cpp
+        tls_common.c
         )
 
 pico_set_program_name(pico-stock-ticker "pico-stock-ticker")
@@ -68,6 +69,7 @@ target_link_libraries(pico-stock-ticker
         pico_graphics
         pico_display_2
         pico_cyw43_arch_lwip_sys_freertos
+        ArduinoJson
         )
 
 # Add the standard include files to the build
@@ -83,6 +85,7 @@ target_compile_definitions(pico-stock-ticker PRIVATE
         WIFI_SSID=\"${WIFI_SSID}\"
         WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
         API_KEY=\"${API_KEY}\"
+        ALTCP_MBEDTLS_AUTHMODE=MBEDTLS_SSL_VERIFY_REQUIRED
         )
 
 # Ignore warnings from lwip code

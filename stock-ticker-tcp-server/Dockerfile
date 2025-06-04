@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # Set the working directory in the container
 WORKDIR /app
@@ -10,18 +10,15 @@ COPY requirements.txt .
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the local certs directory to the image
-# For production, use Docker secrets or secure volume mounts instead.
-COPY ./certs /app/certs
-
-# Copy the server script into the container
-COPY server.py .
+# Copy the current directory contents into the container at /app
+COPY . .
 
 # Make port 8443 available to the world outside this container
 EXPOSE 8443
 
-# Define environment variables (optional, can be overridden)
-ENV PYTHONUNBUFFERED 1
+# Define environment variable for the certificate directory (can be overridden)
+ENV CERT_DIR=/app/certs
 
 # Run server.py when the container launches
+# The CLIENT_AUTH_TOKEN will be passed via `docker run -e`
 CMD ["python", "server.py"]

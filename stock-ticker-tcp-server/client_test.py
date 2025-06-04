@@ -1,8 +1,9 @@
 import socket
 import ssl
 import msgpack
-import struct
+import time
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -10,123 +11,118 @@ logging.basicConfig(
 )
 
 # Client Configuration
-# If server is on VPS, use its public IP or domain name.
-# If server is local Docker, 'localhost' or '127.0.0.1' is fine.
-# SERVER_HOST = "server.example.com" # MUST MATCH CN in server's cert
-SERVER_HOST = "localhost" # For local testing, if server CN is server.example.com, this will fail hostname check unless you set check_hostname=False (not recommended for prod)
-                          # OR, regenerate server cert with CN=localhost for local testing
+# If server is on VPS, change to its domain name (must match CN in server.crt)
+# For local Docker test, 'localhost' is fine if server.crt CN is 'localhost'
+SERVER_HOST = "192.168.0.41"
 SERVER_PORT = 8443
+# Path to the CA certificate file the client uses to verify the server
+CA_CERT = "./certs/ca/ca.crt" # Make sure this file exists where you run the client
 
-# Certificate paths for the client
-CA_CERT = "certs/ca/ca.crt"  # To verify the server
-CLIENT_CERT = "certs/client/client.crt"  # Client's own certificate
-CLIENT_KEY = "certs/client/client.key"  # Client's private key
+# The token this client will use to authenticate
+CLIENT_TOKEN = "supersecretclienttoken12345abcdef" # Must match server's expected token
+# CLIENT_TOKEN = "wrongtoken" # For testing authentication failure
 
-
-def main():
-    # Create SSL context for the client
+def run_client():
+    # SSL Context for TLS client
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.load_verify_locations(CA_CERT)  # CA to verify server's cert
-    context.load_cert_chain(
-        certfile=CLIENT_CERT, keyfile=CLIENT_KEY
-    )  # Client's own cert and key
+    context.check_hostname = True # Enforce hostname checking
+    context.verify_mode = ssl.CERT_REQUIRED
+    try:
+        context.load_verify_locations(cafile=CA_CERT)
+        logging.info(f"Loaded CA certificate from {CA_CERT}")
+    except FileNotFoundError:
+        logging.error(f"CA certificate file not found: {CA_CERT}")
+        return
+    except ssl.SSLError as e:
+        logging.error(f"Error loading CA certificate: {e}")
+        return
 
-    # Enforce server hostname verification (IMPORTANT!)
-    # The server_hostname MUST match the Common Name (CN) or a Subject Alternative Name (SAN)
-    # in the server's certificate. For our generated cert, it's "server.example.com".
-    # If testing locally and server cert CN is "server.example.com", you might need to
-    # add "127.0.0.1 server.example.com" to your /etc/hosts file, or set
-    # context.check_hostname = False (NOT recommended for production).
-    # For this example, if you run server locally and connect to 'localhost',
-    # you should regenerate server cert with CN='localhost' or use /etc/hosts trick.
-    # Let's assume you've set CN=localhost for server cert for easy local test:
-    # context.check_hostname = True # Default is True
-    # server_hostname_to_verify = 'localhost' # if server cert CN is localhost
-    server_hostname_to_verify = (
-        "server.example.com"  # if server cert CN is server.example.com
-    )
-
-    # If you are testing locally and your server cert's CN is 'server.example.com',
-    # but you are connecting to 'localhost', you'll get a hostname mismatch.
-    # To resolve for local testing:
-    # 1. Add '127.0.0.1 server.example.com' to your /etc/hosts file.
-    #    Then connect to SERVER_HOST = "server.example.com".
-    # 2. OR, for testing only, set context.check_hostname = False (NOT SECURE).
-    # 3. OR, regenerate server cert with CN='localhost' if connecting to 'localhost'.
-
-    # For this script, we'll assume you've handled the hostname (e.g., via /etc/hosts)
-    # if SERVER_HOST is 'localhost' but cert CN is 'server.example.com'.
-    # If SERVER_HOST is already 'server.example.com' and resolves correctly, it's fine.
+    packer = msgpack.Packer()
+    unpacker = msgpack.Unpacker(raw=False)
 
     try:
         # Create a standard socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with socket.create_connection((SERVER_HOST, SERVER_PORT), timeout=10) as sock:
+            # Wrap the socket with SSL/TLS
+            # server_hostname must match the CN or SAN in the server's certificate
+            with context.wrap_socket(sock, server_hostname=SERVER_HOST) as secure_sock:
+                logging.info(f"Connected to server: {SERVER_HOST}:{SERVER_PORT} using TLS")
+                server_cert = secure_sock.getpeercert()
+                logging.info(f"Server certificate: {server_cert['subject']}")
 
-        # Wrap the socket with SSL
-        # server_hostname is crucial for SNI and hostname verification
-        ssl_sock = context.wrap_socket(
-            sock, server_side=False, server_hostname=server_hostname_to_verify
-        )
+                # 1. Send authentication token
+                auth_message = {"token": CLIENT_TOKEN}
+                logging.info(f"Sending token: {auth_message}")
+                secure_sock.sendall(packer.pack(auth_message))
 
-        ssl_sock.connect((SERVER_HOST, SERVER_PORT))
-        logging.info(
-            f"Connected to server {SERVER_HOST}:{SERVER_PORT} using mTLS"
-        )
-        server_cert = ssl_sock.getpeercert()
-        logging.info(f"Server certificate: {server_cert.get('subject', 'N/A')}")
+                # Wait for authentication response
+                auth_response_data = secure_sock.recv(1024)
+                if not auth_response_data:
+                    logging.error("Server closed connection after token send.")
+                    return
+                
+                unpacker.feed(auth_response_data)
+                try:
+                    auth_status = unpacker.unpack()
+                    logging.info(f"Auth response: {auth_status}")
+                    if not (isinstance(auth_status, dict) and auth_status.get("status") == "ok"):
+                        logging.error(f"Authentication failed: {auth_status.get('message', 'Unknown error')}")
+                        return
+                except msgpack.OutOfData:
+                    logging.error("Incomplete authentication response from server.")
+                    return
 
-        # Prepare message
-        message_to_send = {
-            "command": "PING",
-            "payload": "Hello from Python Client!",
-            "timestamp": 1234567890,
-        }
-        packed_message = msgpack.packb(message_to_send)
-        header = struct.pack(">I", len(packed_message))
 
-        # Send message
-        ssl_sock.sendall(header + packed_message)
-        logging.info(f"Sent: {message_to_send}")
+                # 2. Send some test messages
+                messages_to_send = [
+                    {"command": "ping"},
+                    {"command": "get_time"},
+                    {"command": "some_other_data", "payload": [1, 2, "test"]},
+                    "just a string" # Example of a message that might be considered malformed by server
+                ]
 
-        # Receive response
-        response_header_bytes = ssl_sock.recv(4)
-        if not response_header_bytes or len(response_header_bytes) < 4:
-            logging.error("Failed to receive response header or incomplete header.")
-            return
+                for msg_data in messages_to_send:
+                    logging.info(f"Sending: {msg_data}")
+                    secure_sock.sendall(packer.pack(msg_data))
+                    
+                    # Receive response
+                    # Loop to handle potentially fragmented messages or multiple messages
+                    while True:
+                        try:
+                            response_data = secure_sock.recv(4096)
+                            if not response_data:
+                                logging.warning("Server closed connection or no more data.")
+                                break # Break inner loop if connection closed
+                            
+                            unpacker.feed(response_data)
+                            for response in unpacker: # Process all fully received messages
+                                logging.info(f"Received: {response}")
+                            break # Assuming one response per request for this simple client
+                        except msgpack.OutOfData:
+                            # Not enough data for a full message yet, try receiving more
+                            logging.debug("Waiting for more data for a complete msgpack object...")
+                            continue 
+                        except socket.timeout:
+                            logging.warning("Socket timeout waiting for response.")
+                            break # Break inner loop on timeout
+                    
+                    time.sleep(1) # Small delay between messages
 
-        response_msg_len = struct.unpack(">I", response_header_bytes)[0]
-        logging.debug(f"Expecting response message of length: {response_msg_len}")
-
-        response_data = b""
-        while len(response_data) < response_msg_len:
-            chunk = ssl_sock.recv(response_msg_len - len(response_data))
-            if not chunk:
-                logging.error("Server disconnected during response receive.")
-                return
-            response_data += chunk
-
-        response = msgpack.unpackb(response_data, raw=False)
-        logging.info(f"Received: {response}")
-
+    except socket.timeout:
+        logging.error(f"Connection to {SERVER_HOST}:{SERVER_PORT} timed out.")
+    except socket.gaierror:
+        logging.error(f"Could not resolve hostname: {SERVER_HOST}")
+    except ConnectionRefusedError:
+        logging.error(f"Connection to {SERVER_HOST}:{SERVER_PORT} refused. Is the server running?")
     except ssl.SSLCertVerificationError as e:
-        logging.error(
-            f"SSL Certificate Verification Error: {e}. "
-            f"Ensure SERVER_HOST ('{SERVER_HOST}') matches the server certificate's CN/SAN, "
-            f"and the CA cert ('{CA_CERT}') is correct."
-        )
+        logging.error(f"SSL Certificate Verification Error: {e}. Ensure CN in server cert matches '{SERVER_HOST}' and CA cert is correct.")
     except ssl.SSLError as e:
         logging.error(f"SSL Error: {e}")
-    except ConnectionRefusedError:
-        logging.error(
-            f"Connection refused. Is the server running at {SERVER_HOST}:{SERVER_PORT}?"
-        )
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
     finally:
-        if "ssl_sock" in locals() and ssl_sock:
-            ssl_sock.close()
-            logging.info("Connection closed.")
-
+        logging.info("Client finished.")
 
 if __name__ == "__main__":
-    main()
+
+    run_client()
