@@ -15,12 +15,6 @@
 #include "task.h"
 #include "semphr.h"
 
-#include "button.hpp"
-#include "drivers/st7789/st7789.hpp"
-#include "libraries/pico_display_2/pico_display_2.hpp"
-#include "libraries/pico_graphics/pico_graphics.hpp"
-#include "rgbled.hpp"
-
 #include "lwip/netif.h"
 #include "lwip/altcp_tls.h"
 

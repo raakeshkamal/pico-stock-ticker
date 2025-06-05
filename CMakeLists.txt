@@ -38,12 +38,12 @@ pico_sdk_init()
 add_subdirectory(common)
 add_subdirectory(drivers)
 add_subdirectory(libraries)
-add_subdirectory(mandelbrot)
 
 # Add executable. Default name is the project name, version 0.1
 add_executable(pico-stock-ticker
         pico-stock-ticker.cpp
         tls_common.c
+        display.cpp
         )
 
 pico_set_program_name(pico-stock-ticker "pico-stock-ticker")

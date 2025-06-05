@@ -1,17 +1,8 @@
 #include "pico-stock-ticker.hpp"
 #include "tls_client.h"
+#include "display.hpp"
 #include <ArduinoJson.h>
 using namespace pimoroni;
-
-ST7789 st7789(320, 240, ROTATE_0, false, get_spi_pins(BG_SPI_FRONT));
-PicoGraphics_PenRGB332 graphics(st7789.width, st7789.height, nullptr);
-
-RGBLED led(PicoDisplay2::LED_R, PicoDisplay2::LED_G, PicoDisplay2::LED_B);
-
-Button button_a(PicoDisplay2::A);
-Button button_b(PicoDisplay2::B);
-Button button_x(PicoDisplay2::X);
-Button button_y(PicoDisplay2::Y);
 
 static const uint8_t cert_ok[] = ROOT_CERT;
 
@@ -302,121 +293,67 @@ void tls_client_task(__unused void *params) {
 }
 
 void main_task(__unused void *params) {
+    // Initialise the Wi-Fi chip
+    if (cyw43_arch_init()) {
+        printf("Wi-Fi init failed\n");
+        return;
+    }
 
-	// Initialise the Wi-Fi chip
-	if (cyw43_arch_init()) {
-		printf("Wi-Fi init failed\n");
-		return;
-	}
+    // Create semaphores before starting tasks that use them
+    http_request_complete_sem = xSemaphoreCreateBinary();
+    if (http_request_complete_sem == NULL) {
+        printf("Failed to create http_request_complete_sem\n");
+    }
 
-	// Create semaphores before starting tasks that use them
-	http_request_complete_sem = xSemaphoreCreateBinary();
-	if (http_request_complete_sem == NULL) {
-		printf("Failed to create http_request_complete_sem\n");
-	}
+    wifi_connected_sem = xSemaphoreCreateBinary();
+    if (wifi_connected_sem == NULL) {
+        printf("Failed to create wifi_connected_sem\n");
+    }
 
-	wifi_connected_sem = xSemaphoreCreateBinary();
-	if (wifi_connected_sem == NULL) {
-		printf("Failed to create wifi_connected_sem\n");
-	}
+    // Initialize display
+    initialize_display();
 
-	// start the led blinking
-	xTaskCreate(blink_task, "BlinkThread", BLINK_TASK_STACK_SIZE, NULL,
-	            BLINK_TASK_PRIORITY, NULL);
-	xTaskCreate(wifi_task, "WiFiThread", WIFI_TASK_STACK_SIZE, NULL,
-	            WIFI_TASK_PRIORITY, NULL);
-	xTaskCreate(tls_client_task, "TLSClientThread", HTTP_GET_TASK_STACK_SIZE, NULL,
-	            HTTP_GET_TASK_PRIORITY, NULL);
+    // Create stock data structure
+    StockData stock_data;
+    initialize_stock_data(stock_data);
 
-	st7789.set_backlight(255);
+    // start the led blinking
+    xTaskCreate(blink_task, "BlinkThread", BLINK_TASK_STACK_SIZE, NULL,
+                BLINK_TASK_PRIORITY, NULL);
+    xTaskCreate(wifi_task, "WiFiThread", WIFI_TASK_STACK_SIZE, NULL,
+                WIFI_TASK_PRIORITY, NULL);
+    xTaskCreate(tls_client_task, "TLSClientThread", HTTP_GET_TASK_STACK_SIZE, NULL,
+                HTTP_GET_TASK_PRIORITY, NULL);
 
-	struct pt {
-		float x;
-		float y;
-		uint8_t r;
-		float dx;
-		float dy;
-		uint16_t pen;
-	};
+    while (true) {
+        static int last_core_id = -1;
+        if (portGET_CORE_ID() != last_core_id) {
+            last_core_id = portGET_CORE_ID();
+            printf("main task is on core %d\n", last_core_id);
+        }
 
-	std::vector<pt> shapes;
-	for (int i = 0; i < 100; i++) {
-		pt shape;
-		shape.x = rand() % graphics.bounds.w;
-		shape.y = rand() % graphics.bounds.h;
-		shape.r = (rand() % 10) + 3;
-		shape.dx = float(rand() % 255) / 64.0f;
-		shape.dy = float(rand() % 255) / 64.0f;
-		shape.pen =
-		    graphics.create_pen(rand() % 255, rand() % 255, rand() % 255);
-		shapes.push_back(shape);
-	}
+        // Update the display with current stock data
+        update_display(stock_data);
 
-	Point text_location(0, 0);
+        // Handle button inputs
+        if (button_a.raw()) {
+            // TODO: Implement button A functionality
+        }
+        if (button_b.raw()) {
+            // TODO: Implement button B functionality
+        }
+        if (button_x.raw()) {
+            // TODO: Implement button X functionality
+        }
+        if (button_y.raw()) {
+            // TODO: Implement button Y functionality
+        }
 
-	Pen BG = graphics.create_pen(120, 40, 60);
-	Pen WHITE = graphics.create_pen(255, 255, 255);
-	while (true) {
-		static int last_core_id = -1;
-		if (portGET_CORE_ID() != last_core_id) {
-			last_core_id = portGET_CORE_ID();
-			printf("main task is on core %d\n", last_core_id);
-		}
-		if (button_a.raw())
-			text_location.x -= 1;
-		if (button_b.raw())
-			text_location.x += 1;
+        vTaskDelay(10);
+    }
 
-		if (button_x.raw())
-			text_location.y -= 1;
-		if (button_y.raw())
-			text_location.y += 1;
-
-		graphics.set_pen(BG);
-		graphics.clear();
-
-		for (auto &shape : shapes) {
-			shape.x += shape.dx;
-			shape.y += shape.dy;
-			if ((shape.x - shape.r) < 0) {
-				shape.dx *= -1;
-				shape.x = shape.r;
-			}
-			if ((shape.x + shape.r) >= graphics.bounds.w) {
-				shape.dx *= -1;
-				shape.x = graphics.bounds.w - shape.r;
-			}
-			if ((shape.y - shape.r) < 0) {
-				shape.dy *= -1;
-				shape.y = shape.r;
-			}
-			if ((shape.y + shape.r) >= graphics.bounds.h) {
-				shape.dy *= -1;
-				shape.y = graphics.bounds.h - shape.r;
-			}
-
-			graphics.set_pen(shape.pen);
-			graphics.circle(Point(shape.x, shape.y), shape.r);
-		}
-
-		// Since HSV takes a float from 0.0 to 1.0 indicating hue,
-		// then we can divide millis by the number of milliseconds
-		// we want a full colour cycle to take. 5000 = 5 sec
-		RGB p = RGB::from_hsv((float)millis() / 5000.0f, 1.0f,
-		                      0.5f + sinf(millis() / 100.0f / 3.14159f) * 0.5f);
-
-		led.set_rgb(p.r, p.g, p.b);
-
-		graphics.set_pen(WHITE);
-		graphics.text("Hello World", text_location, 320);
-
-		// update screen
-		st7789.update(&graphics);
-		vTaskDelay(10); // TODO: create var
-	}
-
-	cyw43_arch_deinit();
-	vTaskDelete(NULL);
+    cyw43_arch_deinit();
+    vTaskDelete(NULL);
 }
 
 void vLaunch(void) {
