@@ -37,12 +37,13 @@ typedef struct TLS_CLIENT_T_ {
 } TLS_CLIENT_T;
 
 static struct altcp_tls_config *tls_config = NULL;
-
+#ifdef MBEDTLS_DEBUG_C
 // Example debug callback
 void my_debug(void *ctx, int level, const char *file, int line, const char *str) {
     ((void)ctx);
     printf("%s:%04d: |%d| %s", file, line, level, str);
 }
+#endif
 
 static err_t tls_client_close_internal(TLS_CLIENT_T *state) {
     err_t err = ERR_OK;
@@ -123,11 +124,13 @@ static void tls_client_connect_to_server_ip(const ip_addr_t *ipaddr, TLS_CLIENT_
 {
     err_t err;
 
+#ifdef MBEDTLS_DEBUG_C
     mbedtls_ssl_context *ssl_context = altcp_tls_context(state->pcb);
     mbedtls_ssl_config *ssl_conf = ssl_context->conf;
 
     mbedtls_ssl_conf_dbg(ssl_conf, my_debug, NULL);
     mbedtls_debug_set_threshold(1);
+#endif
 
     printf("connecting to server IP %s port %d\n", ipaddr_ntoa(ipaddr), port);
     err = altcp_connect(state->pcb, ipaddr, port, tls_client_connected);

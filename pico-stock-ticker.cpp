@@ -214,7 +214,21 @@ void tls_client_task(__unused void *params) {
         }
 
         response[recv_len] = '\0';
-        printf("Auth response received (%d bytes): %s\n", recv_len, response);
+        // printf("Auth response received (%d bytes): %s\n", recv_len, response);
+
+        // Deserialize the MessagePack response
+        JsonDocument response_doc;
+        DeserializationError error = deserializeMsgPack(response_doc, response, recv_len);
+        char json_str[1024] = "";
+
+        if (error) {
+            printf("MessagePack deserialization failed: %s\n", error.c_str());
+        } else {
+            printf("Deserialized response:\n");
+            serializeJsonPretty(response_doc, json_str, sizeof(json_str));
+            printf("%s\n", json_str);
+        }
+        response_doc.clear();
 
         // Prepare array of commands to send
         struct Command {
@@ -245,19 +259,32 @@ void tls_client_task(__unused void *params) {
 
             if (recv_len > 0) {
                 response[recv_len] = '\0';
-                printf("Command response received (%d bytes): %s\n", recv_len, response);
+                // printf("Command response received (%d bytes): %s\n", recv_len, response);
             } else {
                 printf("Error receiving command response: %d\n", recv_len);
                 break;
             }
+
+            // Deserialize the MessagePack response
+            error = deserializeMsgPack(response_doc, response, recv_len);
+            json_str[0] = '\0';
+
+            if (error) {
+                printf("MessagePack deserialization failed: %s\n", error.c_str());
+            } else {
+                printf("Deserialized response:\n");
+                serializeJsonPretty(response_doc, json_str, sizeof(json_str));
+                printf("%s\n", json_str);
+            }
+            response_doc.clear();
 
             // Small delay between commands
             vTaskDelay(pdMS_TO_TICKS(100));
         }
 
         // Send the some_other_data command separately
-        JsonDocument doc;
-        JsonArray arr = doc.to<JsonArray>();
+        JsonDocument cmd_doc;
+        JsonArray arr = cmd_doc.to<JsonArray>();
         arr.add(1);
         arr.add(2);
         arr.add("test");
@@ -278,10 +305,23 @@ void tls_client_task(__unused void *params) {
 
         if (recv_len > 0) {
             response[recv_len] = '\0';
-            printf("Command response received (%d bytes): %s\n", recv_len, response);
+            // printf("Command response received (%d bytes): %s\n", recv_len, response);
         } else {
             printf("Error receiving command response: %d\n", recv_len);
         }
+
+        // Deserialize the MessagePack response
+        error = deserializeMsgPack(response_doc, response, recv_len);
+        json_str[0] = '\0';
+
+        if (error) {
+            printf("MessagePack deserialization failed: %s\n", error.c_str());
+        } else {
+            printf("Deserialized response:\n");
+            serializeJsonPretty(response_doc, json_str, sizeof(json_str));
+            printf("%s\n", json_str);
+        }
+        response_doc.clear();
 
         // Close the connection
         tls_client_close(handle);
