@@ -127,7 +127,7 @@ static void tls_client_connect_to_server_ip(const ip_addr_t *ipaddr, TLS_CLIENT_
     mbedtls_ssl_config *ssl_conf = ssl_context->conf;
 
     mbedtls_ssl_conf_dbg(ssl_conf, my_debug, NULL);
-    mbedtls_debug_set_threshold(0);
+    mbedtls_debug_set_threshold(1);
 
     printf("connecting to server IP %s port %d\n", ipaddr_ntoa(ipaddr), port);
     err = altcp_connect(state->pcb, ipaddr, port, tls_client_connected);

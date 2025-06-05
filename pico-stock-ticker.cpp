@@ -200,10 +200,7 @@ void tls_client_task(__unused void *params) {
 
         // First send authentication request
         size_t auth_len = generate_auth_request(message_buffer, sizeof(message_buffer));
-        message_buffer[auth_len] = '\r';
-        message_buffer[auth_len + 1] = '\n';
-        message_buffer[auth_len + 2] = '\0';
-        auth_len += 2;
+		message_buffer[auth_len] = '\0';
 
         printf("Sending auth request (%d bytes)\n", auth_len);
 
@@ -236,24 +233,13 @@ void tls_client_task(__unused void *params) {
 
         Command commands[] = {
             {"ping", JsonVariant()},
-            {"get_time", JsonVariant()},
-            {"some_other_data", []() {
-                JsonDocument doc;
-                JsonArray arr = doc.to<JsonArray>();
-                arr.add(1);
-                arr.add(2);
-                arr.add("test");
-                return arr;
-            }()}
+            {"get_time", JsonVariant()}
         };
 
         // Send each command one by one
         for (const auto& cmd : commands) {
             size_t cmd_len = generate_command_request(message_buffer, sizeof(message_buffer), cmd.name, cmd.payload);
-            message_buffer[cmd_len] = '\r';
-            message_buffer[cmd_len + 1] = '\n';
-            message_buffer[cmd_len + 2] = '\0';
-            cmd_len += 2;
+			message_buffer[cmd_len] = '\0';
 
             printf("Sending command '%s' (%d bytes)\n", cmd.name, cmd_len);
 
@@ -276,6 +262,34 @@ void tls_client_task(__unused void *params) {
 
             // Small delay between commands
             vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        // Send the some_other_data command separately
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        arr.add(1);
+        arr.add(2);
+        arr.add("test");
+
+        size_t cmd_len = generate_command_request(message_buffer, sizeof(message_buffer), "some_other_data", arr);
+        message_buffer[cmd_len] = '\0';
+
+        printf("Sending command 'some_other_data' (%d bytes)\n", cmd_len);
+
+        recv_len = tls_client_send_and_recv(
+            handle,
+            (uint8_t*)message_buffer,
+            cmd_len,
+            response,
+            sizeof(response),
+            5000  // 5 second timeout per command
+        );
+
+        if (recv_len > 0) {
+            response[recv_len] = '\0';
+            printf("Command response received (%d bytes): %s\n", recv_len, response);
+        } else {
+            printf("Error receiving command response: %d\n", recv_len);
         }
 
         // Close the connection

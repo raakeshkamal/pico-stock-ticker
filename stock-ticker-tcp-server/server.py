@@ -66,6 +66,7 @@ def handle_client(secure_conn, client_address):
         logging.info(f"[{client_address}] Entering main communication loop.")
         while True:
             data = secure_conn.recv(4096)
+            logging.info(f"Received data: {data}")
             if not data:
                 logging.info(f"[{client_address}] Client disconnected (recv returned no data).")
                 break
