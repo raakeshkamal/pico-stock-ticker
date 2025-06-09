@@ -3,8 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
+#include <ctime>
+#include "hardware/rtc.h"
+#include "pico/util/datetime.h"
+#include "pico/rand.h"
 
 // Pico SDK
 #include "pico/stdlib.h"
@@ -15,7 +20,7 @@ using namespace pimoroni;
 static ST7789 st7789(
   PicoDisplay2::WIDTH,
   PicoDisplay2::HEIGHT,
-  ROTATE_0,
+  ROTATE_180,
   false,
   get_spi_pins(BG_SPI_FRONT)
 );
@@ -35,7 +40,7 @@ Button button_x(PicoDisplay2::X);
 Button button_y(PicoDisplay2::Y);
 
 // --- UI Layout Configuration ---
-static const int GRAPH_TOP = 50;
+static const int GRAPH_TOP = 20;
 static const int GRAPH_BOTTOM = 210;
 static const int GRAPH_LEFT = 10;
 static const int GRAPH_RIGHT = 280;
@@ -67,6 +72,15 @@ void update_display(const StockData& data);
 void initialize_stock_data(StockData& data);
 void update_stock_data(StockData& data, const char* symbol, float current_price, float price_change, float percent_change);
 
+// Helper function to format RTC time to 12-hour format
+void format_rtc_time_to_12h(const datetime_t& t, char* output, size_t output_size) {
+    // Convert to 12-hour format
+    int hour_12 = t.hour % 12;
+    if (hour_12 == 0) hour_12 = 12;  // Convert 0 to 12 for 12 AM
+    const char* ampm = (t.hour >= 12) ? "PM" : "AM";
+    snprintf(output, output_size, "%02d:%02d %s", hour_12, t.min, ampm);
+}
+
 void initialize_display() {
   st7789.set_backlight(200); // Set brightness (0-255)
 
@@ -82,10 +96,17 @@ void set_backlight(uint8_t brightness) {
   st7789.set_backlight(brightness);
 }
 
-void update_display(const StockData& data) {
+void update_display(StockData& data) {
   // Clear screen with the main background color
   graphics.set_pen(BG_DARK_BLUE);
   graphics.clear();
+
+    // Get current time from RTC
+  datetime_t now;
+  rtc_get_datetime(&now);
+  char timestamp[50];
+  format_rtc_time_to_12h(now, timestamp, sizeof(timestamp));
+  strcpy(data.timestamp, timestamp);
 
   // Draw all UI components
   display_internal::draw_header(data);
@@ -100,18 +121,67 @@ void initialize_stock_data(StockData& data) {
   snprintf(data.symbol, sizeof(data.symbol), "NVDA");
   snprintf(data.duration, sizeof(data.duration), "1h");
   data.current_price = 878.37f;
-  data.price_change = 11.43f;
-  data.percent_change = 1.32f;
 
-  // Generate fake data that looks like the chart in the image
+  datetime_t t;
+  rtc_get_datetime(&t);
+  
+  char timestamp[50];
+  format_rtc_time_to_12h(t, timestamp, sizeof(timestamp));
+  strcpy(data.timestamp, timestamp);
+  
+  // Generate random price history data
   data.history_len = 30;
-  float fake_history[30] = {
-    868, 866, 869, 867, 865, 867, 864, 866, 863, 865, 862, 864, 861,
-    863, 860, 862, 864, 862, 865, 867, 864, 868, 870, 868, 872, 875,
-    873, 877, 879, 881};
-  for (int i = 0; i < 30; ++i) {
-    data.history[i] = fake_history[i];
+  
+  // Create a more sophisticated random seed using multiple sources
+  uint32_t seed = t.sec + t.min + t.hour + t.day + t.month + t.year;
+  seed += (uint32_t)get_rand_32();    // Use Pico's hardware random number generator
+  
+  srand(seed);  // Seed random number generator with combined entropy  
+  float base_price = 850.0f + (rand() % 100);  // Random base price between 850-950
+  float trend = (rand() % 2) ? 1.0f : -1.0f;   // Random up or down trend
+  
+  // Generate first period's data
+  float current_price = base_price;
+  float volatility = (rand() % 5) + 1;  // Random volatility between 1-5
+  data.history[0].open = current_price;
+  data.history[0].high = current_price + (rand() % (int)volatility);
+  data.history[0].low = current_price - (rand() % (int)volatility);
+  data.history[0].close = current_price + ((rand() % 10) - 5);  // Random close price near the open
+  
+  // Generate subsequent periods
+  for (int i = 1; i < 30; ++i) {
+    // Add some random noise and trend
+    float noise = (rand() % 10) - 5;  // Random noise between -5 and +5
+    float trend_factor = trend * (i / 10.0f);  // Gradually increasing trend effect
+    
+    // Use previous close as current open
+    current_price = data.history[i-1].close;
+    volatility = (rand() % 5) + 1;  // Random volatility between 1-5
+    
+    data.history[i].open = current_price;
+    data.history[i].high = current_price + (rand() % (int)volatility);
+    data.history[i].low = current_price - (rand() % (int)volatility);
+    data.history[i].close = current_price + ((rand() % 10) - 5);  // Random close price near the open
   }
+  
+  // Set initial values from first OHLC data point
+  data.open_price = data.history[0].open;
+  data.high_price = data.history[0].high;
+  data.low_price = data.history[0].low;
+  
+  // Find high and low prices from history
+  for (int i = 1; i < data.history_len; i++) {
+    if (data.history[i].high > data.high_price) {
+      data.high_price = data.history[i].high;
+    }
+    if (data.history[i].low < data.low_price) {
+      data.low_price = data.history[i].low;
+    }
+  }
+  
+  // Calculate price change and percent change using the last close price
+  data.price_change = data.current_price - data.history[data.history_len - 1].close;
+  data.percent_change = (data.price_change / data.history[data.history_len - 1].close) * 100.0f;
 }
 
 void update_stock_data(StockData& data, const char* symbol, float current_price, float price_change, float percent_change) {
@@ -124,18 +194,24 @@ void update_stock_data(StockData& data, const char* symbol, float current_price,
 namespace display_internal {
   void draw_header(const StockData& data) {
     graphics.set_pen(TEXT_WHITE);
-    graphics.text(data.duration, Point(10, 10), 200, 3);
-    graphics.text(data.symbol, Point(130, 10), 200, 3);
+    
+    // Convert and display timestamp in 12-hour format
+    graphics.text(data.timestamp, Point(5, 10), 200, 2);
+    
+    // Calculate exact text width using the graphics library
+    int symbol_width = graphics.measure_text(data.symbol, 3.0f);
+    int center_x = (PicoDisplay2::WIDTH - symbol_width) / 2;
+    graphics.text(data.symbol, Point(center_x, 10), 200, 3);
 
     // Set color based on positive or negative change
     graphics.set_pen(data.price_change >= 0 ? TEXT_GREEN : TEXT_WHITE);
 
     char buffer[16];
     snprintf(buffer, 16, "%+.2f", data.price_change);
-    graphics.text(buffer, Point(220, 10), 100, 2);
-
-    snprintf(buffer, 16, "%+.2f%%", data.percent_change);
-    graphics.text(buffer, Point(220, 30), 100, 2);
+    // Calculate exact text width using the graphics library
+    int price_width = graphics.measure_text(buffer, 2.0f);
+    int right_x = PicoDisplay2::WIDTH - price_width - 10; // 10px padding from right edge
+    graphics.text(buffer, Point(right_x, 10), 100, 2);
   }
 
   void draw_footer(const StockData& data) {
@@ -147,31 +223,19 @@ namespace display_internal {
 
     // Draw text
     graphics.set_pen(TEXT_WHITE);
-    graphics.text(data.symbol, Point(10, GRAPH_BOTTOM + 8), 100, 2);
+    
+    // Calculate widths of all text elements
+    char buffer[16];
+    snprintf(buffer, 16, "H:%.2f", data.high_price);
+    int high_width = graphics.measure_text(buffer, 2.0f);
+    
+    snprintf(buffer, 16, "L:%.2f", data.low_price);
+    int low_width = graphics.measure_text(buffer, 2.0f);
+    
+    int duration_width = graphics.measure_text(data.duration, 2.0f);
 
-    char price_str[16];
-    snprintf(price_str, 16, "%.2f", data.current_price);
-    graphics.text(price_str, Point(80, GRAPH_BOTTOM + 8), 100, 2);
-
-    // Set color for arrow and percentage
-    graphics.set_pen(data.percent_change >= 0 ? TEXT_GREEN : TEXT_WHITE);
-
-    // Draw the up/down arrow (a filled triangle)
-    if (data.percent_change >= 0) {
-      graphics.triangle(
-        Point(170, GRAPH_BOTTOM + 18),
-        Point(178, GRAPH_BOTTOM + 18),
-        Point(174, GRAPH_BOTTOM + 10)
-      );
-    } else {
-      graphics.triangle(
-        Point(170, GRAPH_BOTTOM + 10),
-        Point(178, GRAPH_BOTTOM + 10),
-        Point(174, GRAPH_BOTTOM + 18)
-      );
-    }
-
-    // Format percentage with a comma separator to match the image
+    
+    // Format percentage with a comma separator
     char percent_buf[10];
     snprintf(percent_buf, 10, "%.2f", data.percent_change);
     char percent_str[12];
@@ -185,17 +249,63 @@ namespace display_internal {
     }
     percent_str[len++] = '%';
     percent_str[len] = '\0';
-    graphics.text(percent_str, Point(190, GRAPH_BOTTOM + 8), 100, 2);
+    int percent_width = graphics.measure_text(percent_str, 2.0f);
+
+    // Draw all elements left-justified with no padding
+    int x = 5;  // Start from left edge
+    
+    // Draw duration
+    graphics.text(data.duration, Point(x, GRAPH_BOTTOM + 8), 100, 2);
+    
+    // Draw high price
+    int high_price_x = PicoDisplay2::WIDTH / 3.0f;
+    x = high_price_x - (high_width / 2);
+    snprintf(buffer, 16, "H:%.2f", data.high_price);
+    graphics.text(buffer, Point(x, GRAPH_BOTTOM + 8), 100, 2);
+    
+    // Draw low price
+    int low_price_x = (PicoDisplay2::WIDTH / 3.0f) * 2;
+    x = low_price_x - (low_width / 2);
+    snprintf(buffer, 16, "L:%.2f", data.low_price);
+    graphics.text(buffer, Point(x, GRAPH_BOTTOM + 8), 100, 2);
+
+    // Set color for arrow and percentage
+    graphics.set_pen(data.percent_change >= 0 ? TEXT_GREEN : TEXT_WHITE);
+    
+    // Calculate total width of percentage and arrow
+    int arrow_width = 8; // Width of the triangle
+    int total_width = percent_width + arrow_width;
+    
+    // Position from right edge
+    int right_x = PicoDisplay2::WIDTH - total_width - 10;
+    
+    // Draw the up/down arrow (a filled triangle)
+    if (data.percent_change >= 0) {
+      graphics.triangle(
+        Point(right_x, GRAPH_BOTTOM + 10),
+        Point(right_x + 8, GRAPH_BOTTOM + 10),
+        Point(right_x + 4, GRAPH_BOTTOM + 18)
+      );
+    } else {
+      graphics.triangle(
+        Point(right_x, GRAPH_BOTTOM + 10),
+        Point(right_x + 8, GRAPH_BOTTOM + 10),
+        Point(right_x + 4, GRAPH_BOTTOM + 18)
+      );
+    }
+    
+    // Draw percentage right after the arrow
+    graphics.text(percent_str, Point(right_x + arrow_width + 4, GRAPH_BOTTOM + 8), 100, 2);
   }
 
   void draw_graph_and_labels(const StockData& data) {
     if (data.history_len == 0) return;
 
-    float min_price = data.history[0];
-    float max_price = data.history[0];
+    float min_price = data.history[0].low;
+    float max_price = data.history[0].high;
     for (int i = 1; i < data.history_len; ++i) {
-      if (data.history[i] < min_price) min_price = data.history[i];
-      if (data.history[i] > max_price) max_price = data.history[i];
+        if (data.history[i].low < min_price) min_price = data.history[i].low;
+        if (data.history[i].high > max_price) max_price = data.history[i].high;
     }
     float price_range = max_price - min_price;
 
@@ -211,33 +321,62 @@ namespace display_internal {
     float first_label = floor(min_price / step) * step;
 
     for (float val = first_label; val <= max_price; val += step) {
-      if (val < min_price) continue;
-      int y = map_value(val, min_price, max_price, GRAPH_BOTTOM, GRAPH_TOP);
-      if (y > GRAPH_TOP - 10 && y < GRAPH_BOTTOM) {
-        char label_str[10];
-        snprintf(label_str, 10, "%d", (int)roundf(val));
-        graphics.text(label_str, Point(Y_LABELS_X, y - 8), 50, 2);
-      }
+        if (val < min_price) continue;
+        int y = map_value(val, min_price, max_price, GRAPH_BOTTOM, GRAPH_TOP);
+        
+        // Skip labels that would overlap with the header area
+        // Add 20 pixels buffer from the top to account for text height
+        if (y < GRAPH_TOP + 20) continue;
+        
+        if (y < GRAPH_BOTTOM) {
+            char label_str[10];
+            snprintf(label_str, 10, "%d", (int)roundf(val));
+            graphics.text(label_str, Point(Y_LABELS_X, y - 8), 50, 2);
+        }
     }
 
-    // Draw Graph Line
-    graphics.set_pen(LINE_WHITE);
-    Point prev_point;
-    for (int i = 0; i < data.history_len; ++i) {
-      int x = map_value(i, 0, data.history_len - 1, GRAPH_LEFT, GRAPH_RIGHT);
-      int y = map_value(
-        data.history[i],
-        min_price,
-        max_price,
-        GRAPH_BOTTOM,
-        GRAPH_TOP
-      );
-      Point current_point(x, y);
+    // Calculate candlestick width and spacing
+    float raw_width = (GRAPH_RIGHT - GRAPH_LEFT) / (float)data.history_len * 0.8f;
+    int candle_width = (int)raw_width;
+    if (candle_width % 2 == 0) {
+        candle_width--;  // Make it odd
+    }
+    float candle_spacing = (GRAPH_RIGHT - GRAPH_LEFT) / (float)data.history_len * 0.2f;
 
-      if (i > 0) {
-        graphics.line(prev_point, current_point);
-      }
-      prev_point = current_point;
+    // Draw Candlesticks
+    for (int i = 0; i < data.history_len; ++i) {
+        float x = map_value(i, 0, data.history_len - 1, GRAPH_LEFT, GRAPH_RIGHT);
+        
+        // Calculate y positions for OHLC
+        int open_y = map_value(data.history[i].open, min_price, max_price, GRAPH_BOTTOM, GRAPH_TOP);
+        int close_y = map_value(data.history[i].close, min_price, max_price, GRAPH_BOTTOM, GRAPH_TOP);
+        int high_y = map_value(data.history[i].high, min_price, max_price, GRAPH_BOTTOM, GRAPH_TOP);
+        int low_y = map_value(data.history[i].low, min_price, max_price, GRAPH_BOTTOM, GRAPH_TOP);
+
+        // Draw the wick (high-low line)
+        graphics.set_pen(LINE_WHITE);
+        graphics.line(
+            Point(x, high_y),
+            Point(x, low_y)
+        );
+
+        // Draw the body
+        bool is_bullish = data.history[i].close >= data.history[i].open;
+        graphics.set_pen(is_bullish ? TEXT_GREEN : TEXT_WHITE);
+        
+        // Draw filled rectangle for the body
+        int body_top = std::min(open_y, close_y);
+        int body_height = std::abs(close_y - open_y);
+        if (body_height == 0) body_height = 1; // Ensure at least 1px height for doji
+        
+        graphics.rectangle(
+            Rect(
+                x - candle_width/2,
+                body_top,
+                candle_width,
+                body_height
+            )
+        );
     }
   }
 

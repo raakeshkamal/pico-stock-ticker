@@ -13,19 +13,30 @@
 using namespace pimoroni;
 
 // Stock data structure
+struct OHLC {
+    float open;
+    float high;
+    float low;
+    float close;
+};
+
 struct StockData {
     char symbol[8];
     char duration[8];
+    char timestamp[50];
     float current_price;
+    float open_price;
+    float high_price;
+    float low_price;
     float price_change;
     float percent_change;
-    float history[100];
+    OHLC history[30];
     int history_len;
 };
 
 // Display initialization and control functions
 void initialize_display();
-void update_display(const StockData& data);
+void update_display(StockData& data);
 void set_backlight(uint8_t brightness);
 
 // Data management functions

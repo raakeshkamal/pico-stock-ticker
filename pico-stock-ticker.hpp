@@ -22,9 +22,6 @@ const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 const char *api_key = API_KEY;
 
-#define HOST "www.alphavantage.co"
-#define URL_REQUEST "/query?function=CURRENCY_EXCHANGE_RATE&from_currency=USD&to_currency=JPY&apikey="  API_KEY
-
 const uint32_t SPI_FREQ = 1000 * 1000;
 const uint32_t timeout = 30000;
 
@@ -40,7 +37,7 @@ const uint32_t LED_DELAY = 100;
 #define MAIN_TASK_STACK_SIZE configMINIMAL_STACK_SIZE
 #define BLINK_TASK_STACK_SIZE configMINIMAL_STACK_SIZE
 #define WIFI_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 2)
-#define HTTP_GET_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 10)
+#define HTTP_GET_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 8)
 
 #define ROOT_CERT "-----BEGIN CERTIFICATE-----\n\
 MIIDszCCApugAwIBAgIUbuK+gRCgScq3OcxJO6tPWDFrrAMwDQYJKoZIhvcNAQEL\n\

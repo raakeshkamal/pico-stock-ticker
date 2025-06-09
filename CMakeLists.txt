@@ -62,6 +62,8 @@ target_link_libraries(pico-stock-ticker
         hardware_spi
         hardware_pwm
         hardware_dma
+        hardware_rtc
+        pico_rand
         FreeRTOS-Kernel-Heap3
         button
         rgbled

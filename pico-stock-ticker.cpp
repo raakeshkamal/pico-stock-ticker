@@ -2,7 +2,9 @@
 #include "tls_client.h"
 #include "display.hpp"
 #include <ArduinoJson.h>
-using namespace pimoroni;
+#include <cstdint>
+#include "hardware/rtc.h"
+#include "pico/util/datetime.h"
 
 static const uint8_t cert_ok[] = ROOT_CERT;
 
@@ -139,6 +141,7 @@ void wifi_task(__unused void *params) {
 
 // Buffer for MessagePack encoded messages
 static char message_buffer[1024];  // Larger buffer to hold all messages
+static uint8_t response_buffer[1024];
 
 // Function to generate MessagePack encoded authentication request
 static size_t generate_auth_request(char* buffer, size_t buffer_size) {
@@ -196,13 +199,12 @@ void tls_client_task(__unused void *params) {
         printf("Sending auth request (%d bytes)\n", auth_len);
 
         // Send auth request and receive response
-        uint8_t response[1024];
         int recv_len = tls_client_send_and_recv(
             handle,
             (uint8_t*)message_buffer,
             auth_len,
-            response,
-            sizeof(response),
+            response_buffer,
+            sizeof(response_buffer),
             5000  // 5 second timeout for auth
         );
 
@@ -213,20 +215,20 @@ void tls_client_task(__unused void *params) {
             continue;
         }
 
-        response[recv_len] = '\0';
+        response_buffer[recv_len] = '\0';
         // printf("Auth response received (%d bytes): %s\n", recv_len, response);
 
         // Deserialize the MessagePack response
         JsonDocument response_doc;
-        DeserializationError error = deserializeMsgPack(response_doc, response, recv_len);
-        char json_str[1024] = "";
+        DeserializationError error = deserializeMsgPack(response_doc, response_buffer, recv_len);
+        message_buffer[0] = '\0';
 
         if (error) {
             printf("MessagePack deserialization failed: %s\n", error.c_str());
         } else {
             printf("Deserialized response:\n");
-            serializeJsonPretty(response_doc, json_str, sizeof(json_str));
-            printf("%s\n", json_str);
+            serializeJsonPretty(response_doc, message_buffer, sizeof(message_buffer));
+            printf("%s\n", message_buffer);
         }
         response_doc.clear();
 
@@ -252,13 +254,13 @@ void tls_client_task(__unused void *params) {
                 handle,
                 (uint8_t*)message_buffer,
                 cmd_len,
-                response,
-                sizeof(response),
+                response_buffer,
+                sizeof(response_buffer),
                 5000  // 5 second timeout per command
             );
 
             if (recv_len > 0) {
-                response[recv_len] = '\0';
+                response_buffer[recv_len] = '\0';
                 // printf("Command response received (%d bytes): %s\n", recv_len, response);
             } else {
                 printf("Error receiving command response: %d\n", recv_len);
@@ -266,15 +268,15 @@ void tls_client_task(__unused void *params) {
             }
 
             // Deserialize the MessagePack response
-            error = deserializeMsgPack(response_doc, response, recv_len);
-            json_str[0] = '\0';
+            error = deserializeMsgPack(response_doc, response_buffer, recv_len);
+            message_buffer[0] = '\0';
 
             if (error) {
                 printf("MessagePack deserialization failed: %s\n", error.c_str());
             } else {
                 printf("Deserialized response:\n");
-                serializeJsonPretty(response_doc, json_str, sizeof(json_str));
-                printf("%s\n", json_str);
+                serializeJsonPretty(response_doc, message_buffer, sizeof(message_buffer));
+                printf("%s\n", message_buffer);
             }
             response_doc.clear();
 
@@ -298,28 +300,28 @@ void tls_client_task(__unused void *params) {
             handle,
             (uint8_t*)message_buffer,
             cmd_len,
-            response,
-            sizeof(response),
+            response_buffer,
+            sizeof(response_buffer),
             5000  // 5 second timeout per command
         );
 
         if (recv_len > 0) {
-            response[recv_len] = '\0';
+            response_buffer[recv_len] = '\0';
             // printf("Command response received (%d bytes): %s\n", recv_len, response);
         } else {
             printf("Error receiving command response: %d\n", recv_len);
         }
 
         // Deserialize the MessagePack response
-        error = deserializeMsgPack(response_doc, response, recv_len);
-        json_str[0] = '\0';
+        error = deserializeMsgPack(response_doc, response_buffer, recv_len);
+        message_buffer[0] = '\0';
 
         if (error) {
             printf("MessagePack deserialization failed: %s\n", error.c_str());
         } else {
             printf("Deserialized response:\n");
-            serializeJsonPretty(response_doc, json_str, sizeof(json_str));
-            printf("%s\n", json_str);
+            serializeJsonPretty(response_doc, message_buffer, sizeof(message_buffer));
+            printf("%s\n", message_buffer);
         }
         response_doc.clear();
 
@@ -412,7 +414,21 @@ int main(void) {
 	const char *rtos_name;
 	rtos_name = "FreeRTOS SMP";
 
-	stdio_init_all();
+    // 1. Create a datetime_t struct to hold the time
+    datetime_t t = {
+        .year = 2025,
+        .month = 6,
+        .day = 6,
+        .dotw = 5, // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
+        .hour = 12,
+        .min = 30,
+        .sec = 15
+    };
+
+    // 2. Initialize the RTC and set the time
+    rtc_init();
+    rtc_set_datetime(&t);
+    
 
 	printf("Starting %s on both cores:\n", rtos_name);
 	vLaunch();
