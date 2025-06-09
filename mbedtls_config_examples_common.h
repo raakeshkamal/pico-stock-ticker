@@ -71,6 +71,8 @@
 // The following significantly speeds up mbedtls due to NIST optimizations.
 #define MBEDTLS_ECP_NIST_OPTIM
 
-// #define MBEDTLS_DEBUG_C
+#ifdef DEBUG
+#define MBEDTLS_DEBUG_C
+#endif
 
 #endif

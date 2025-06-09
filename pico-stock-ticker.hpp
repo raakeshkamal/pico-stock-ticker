@@ -39,6 +39,12 @@ const uint32_t LED_DELAY = 100;
 #define WIFI_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 2)
 #define HTTP_GET_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 8)
 
+#define TLS_CLIENT_SERVER                                                      \
+	"192.168.0.41"           // Change this to your server's IP or hostname
+#define TLS_CLIENT_PORT 8443 // Server listens on port 8443
+#define TLS_CLIENT_AUTH_TOKEN                                                  \
+	"supersecretclienttoken12345abcdef" // Must match server's CLIENT_AUTH_TOKEN
+
 #define ROOT_CERT                                                              \
 	"-----BEGIN CERTIFICATE-----\n\
 MIIDszCCApugAwIBAgIUbuK+gRCgScq3OcxJO6tPWDFrrAMwDQYJKoZIhvcNAQEL\n\
@@ -62,3 +68,25 @@ mhjI3PSzhHPQuvFhgfPUDg8Of5ekv05bVD3JbxSVyAce69iHKGLoog8BzvSBK6uC\n\
 Rdte6KoWMtSzZxA4TSEy1FKBBdPsNrbH/iNCO0pTQ1eOEUAZJwkGCkA4w5XGyHzO\n\
 MrczL/37SegB2zR/oBqGCVTIZupsgkUFhu7WfINKE2IhtScP7ldf\n\
 -----END CERTIFICATE-----\n"
+
+// Error codes for command sending
+enum CommandError {
+	CMD_SUCCESS = 0,
+	CMD_SEND_ERROR = -1,
+	CMD_RECV_ERROR = -2,
+	CMD_DESERIALIZE_ERROR = -3
+};
+
+// Stack usage tracking structure
+struct TaskStackUsage {
+    const char* task_name;
+    UBaseType_t stack_size;
+    UBaseType_t high_water_mark;
+};
+
+// Global array to store stack usage data
+extern TaskStackUsage task_stack_usage[];
+extern const size_t NUM_TASKS;
+
+// Function to print stack usage
+void print_task_stack_usage();

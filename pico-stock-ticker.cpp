@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <ctime>
 #include <vector>
+#include <cstdio>  // for printf
+#include <cstring> // for strcmp
 
 static const uint8_t cert_ok[] = ROOT_CERT;
 
@@ -15,6 +17,49 @@ static SemaphoreHandle_t http_request_complete_sem = NULL;
 static SemaphoreHandle_t wifi_connected_sem = NULL; // To signal HTTP task
 
 volatile uint32_t ulIdleCycleCount = 0UL;
+
+// Define the number of tasks we're tracking
+const size_t NUM_TASKS = 4;  // main, blink, wifi, tls_client
+
+// Initialize the stack usage tracking array
+TaskStackUsage task_stack_usage[NUM_TASKS] = {
+    {"MainThread", MAIN_TASK_STACK_SIZE, 0},
+    {"BlinkThread", BLINK_TASK_STACK_SIZE, 0},
+    {"WiFiThread", WIFI_TASK_STACK_SIZE, 0},
+    {"TLSClientThread", HTTP_GET_TASK_STACK_SIZE, 0}
+};
+
+// Function to update stack usage for a task
+static void update_task_stack_usage(const char* task_name) {
+    TaskHandle_t task = xTaskGetHandle(task_name);
+    if (task != NULL) {
+        for (size_t i = 0; i < NUM_TASKS; i++) {
+            if (strcmp(task_stack_usage[i].task_name, task_name) == 0) {
+                task_stack_usage[i].high_water_mark = uxTaskGetStackHighWaterMark(task);
+                break;
+            }
+        }
+    }
+}
+
+// Function to print stack usage for all tasks
+void print_task_stack_usage() {
+    printf("\nTask Stack Usage Report:\n");
+    printf("----------------------\n");
+    for (size_t i = 0; i < NUM_TASKS; i++) {
+        UBaseType_t stack_size_bytes = task_stack_usage[i].stack_size * sizeof(StackType_t);
+        UBaseType_t high_water_bytes = task_stack_usage[i].high_water_mark * sizeof(StackType_t);
+        UBaseType_t used_bytes = stack_size_bytes - high_water_bytes;
+        float usage_percent = (float)used_bytes / stack_size_bytes * 100.0f;
+        
+        printf("%s:\n", task_stack_usage[i].task_name);
+        printf("  Stack Size: %d bytes\n", stack_size_bytes);
+        printf("  High Water Mark: %d bytes\n", high_water_bytes);
+        printf("  Used: %d bytes (%.1f%%)\n", used_bytes, usage_percent);
+        printf("  Free: %d bytes\n", high_water_bytes);
+        printf("----------------------\n");
+    }
+}
 
 void vApplicationIdleHook(void) {
 	ulIdleCycleCount++;
@@ -59,6 +104,7 @@ void blink_task(__unused void *params) {
 			last_core_id = portGET_CORE_ID();
 			printf("blink task is on core %d\n", last_core_id);
 		}
+		update_task_stack_usage("BlinkThread");
 		pico_set_led(on);
 		on = !on;
 		sleep_ms(LED_DELAY); // TODO: vary the LED with WiFi Connection
@@ -130,16 +176,11 @@ void wifi_task(__unused void *params) {
 		}
 
 		vTaskDelay(pdMS_TO_TICKS(status == CYW43_LINK_JOIN ? 10000 : 1000));
+		update_task_stack_usage("WiFiThread");
 	}
 
 	vTaskDelete(NULL);
 }
-
-#define TLS_CLIENT_SERVER                                                      \
-	"192.168.0.41"           // Change this to your server's IP or hostname
-#define TLS_CLIENT_PORT 8443 // Server listens on port 8443
-#define TLS_CLIENT_AUTH_TOKEN                                                  \
-	"supersecretclienttoken12345abcdef" // Must match server's CLIENT_AUTH_TOKEN
 
 // Buffer for MessagePack encoded messages
 static char message_buffer[1024]; // Larger buffer to hold all messages
@@ -169,14 +210,6 @@ static size_t generate_command_request(char *buffer, size_t buffer_size,
 	// Serialize to MessagePack format
 	return serializeMsgPack(doc, buffer, buffer_size);
 }
-
-// Error codes for command sending
-enum CommandError {
-	CMD_SUCCESS = 0,
-	CMD_SEND_ERROR = -1,
-	CMD_RECV_ERROR = -2,
-	CMD_DESERIALIZE_ERROR = -3
-};
 
 // Generic function to send a command and receive response
 static CommandError send_command(TLS_CLIENT_HANDLE handle, const char *command,
@@ -215,9 +248,11 @@ static CommandError send_command(TLS_CLIENT_HANDLE handle, const char *command,
 		return CMD_DESERIALIZE_ERROR;
 	}
 
+#ifdef DEBUG
 	printf("Deserialized response:\n");
 	serializeJsonPretty(response_doc, message_buffer, message_buffer_size);
 	printf("%s\n", message_buffer);
+#endif
 
 	return CMD_SUCCESS;
 }
@@ -226,6 +261,7 @@ static CommandError send_command(TLS_CLIENT_HANDLE handle, const char *command,
 static bool parse_and_set_rtc_time(const char *time_str) {
 	// Expected format: "YYYY-MM-DD HH:MM:SS TZ"
 	int year, month, day, hour, min, sec;
+	int dotw = 1;
 	char tz[4];
 
 	// Parse the time string
@@ -240,9 +276,10 @@ static bool parse_and_set_rtc_time(const char *time_str) {
 	    .year = (int16_t)year,
 	    .month = (int8_t)month,
 	    .day = (int8_t)day,
+	    .dotw = (int8_t)dotw,
 	    .hour = (int8_t)hour,
 	    .min = (int8_t)min,
-	    .sec = (int8_t)sec,
+	    .sec = (int8_t)sec
 	};
 
 	// Set the RTC time
@@ -334,6 +371,9 @@ void tls_client_task(__unused void *params) {
 			last_core_id = portGET_CORE_ID();
 			printf("tls client task is on core %d\n", last_core_id);
 		}
+		update_task_stack_usage("TLSClientThread");
+		// Add stack usage report after each connection cycle
+		print_task_stack_usage();
 
 		// Initialize and connect to the server
 		TLS_CLIENT_HANDLE handle = tls_client_init_and_connect(
@@ -367,8 +407,6 @@ void tls_client_task(__unused void *params) {
 		}
 
 		response_buffer[recv_len] = '\0';
-		// printf("Auth response received (%d bytes): %s\n", recv_len,
-		// response);
 
 		// Deserialize the MessagePack response
 		JsonDocument response_doc;
@@ -443,8 +481,7 @@ void tls_client_task(__unused void *params) {
 		if (err != CMD_SUCCESS) {
 			printf("Command 'get_stock_data' failed with error %d\n", err);
 		}
-		StockData stock_data;
-		initialize_stock_data(stock_data); // Initialize with default values
+		extern StockData stock_data;
 
 		if (parse_stock_data(response_doc, stock_data)) {
 			printf("Received %d data points for %s\n", stock_data.history_len,
@@ -472,6 +509,8 @@ void tls_client_task(__unused void *params) {
 }
 
 void main_task(__unused void *params) {
+	rtc_init();
+
 	// Initialise the Wi-Fi chip
 	if (cyw43_arch_init()) {
 		printf("Wi-Fi init failed\n");
@@ -493,7 +532,7 @@ void main_task(__unused void *params) {
 	initialize_display();
 
 	// Create stock data structure
-	StockData stock_data;
+	extern StockData stock_data;
 	initialize_stock_data(stock_data);
 
 	// start the led blinking
@@ -511,6 +550,7 @@ void main_task(__unused void *params) {
 			printf("main task is on core %d\n", last_core_id);
 		}
 
+		update_task_stack_usage("MainThread");
 		// Update the display with current stock data
 		update_display(stock_data);
 
@@ -550,20 +590,6 @@ int main(void) {
 	/* Configure the hardware ready to run the demo. */
 	const char *rtos_name;
 	rtos_name = "FreeRTOS SMP";
-
-	// 1. Create a datetime_t struct to hold the time
-	datetime_t t = {.year = 2025,
-	                .month = 6,
-	                .day = 6,
-	                .dotw =
-	                    5, // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
-	                .hour = 12,
-	                .min = 30,
-	                .sec = 15};
-
-	// 2. Initialize the RTC and set the time
-	rtc_init();
-	rtc_set_datetime(&t);
 
 	printf("Starting %s on both cores:\n", rtos_name);
 	vLaunch();

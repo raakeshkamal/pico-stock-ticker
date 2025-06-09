@@ -45,7 +45,7 @@ static Pen LINE_WHITE;
 static Pen FOOTER_BG;
 
 // --- Stock Data ---
-static StockData nvda_data;
+StockData stock_data;
 
 // Forward declarations of internal functions
 namespace display_internal {

@@ -88,6 +88,7 @@ target_compile_definitions(pico-stock-ticker PRIVATE
         WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
         API_KEY=\"${API_KEY}\"
         ALTCP_MBEDTLS_AUTHMODE=MBEDTLS_SSL_VERIFY_REQUIRED
+        # DEBUG
         )
 
 # Ignore warnings from lwip code
