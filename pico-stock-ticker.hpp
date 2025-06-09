@@ -12,11 +12,11 @@
 #include <vector>
 
 #include "FreeRTOS.h"
-#include "task.h"
 #include "semphr.h"
+#include "task.h"
 
-#include "lwip/netif.h"
 #include "lwip/altcp_tls.h"
+#include "lwip/netif.h"
 
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
@@ -39,7 +39,8 @@ const uint32_t LED_DELAY = 100;
 #define WIFI_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 2)
 #define HTTP_GET_TASK_STACK_SIZE (configMINIMAL_STACK_SIZE * 8)
 
-#define ROOT_CERT "-----BEGIN CERTIFICATE-----\n\
+#define ROOT_CERT                                                              \
+	"-----BEGIN CERTIFICATE-----\n\
 MIIDszCCApugAwIBAgIUbuK+gRCgScq3OcxJO6tPWDFrrAMwDQYJKoZIhvcNAQEL\n\
 BQAwaTELMAkGA1UEBhMCVVMxEzARBgNVBAgMCkNhbGlmb3JuaWExFTATBgNVBAcM\n\
 DE1vdW50YWluVmlldzEOMAwGA1UECgwFTXlPcmcxCzAJBgNVBAsMAkNBMREwDwYD\n\

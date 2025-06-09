@@ -5,6 +5,8 @@ import msgpack
 import os
 import logging
 import time
+import yfinance as yf
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(
@@ -86,8 +88,42 @@ def handle_client(secure_conn, client_address):
                         response["server_time"] = time.strftime("%Y-%m-%d %H:%M:%S %Z")
                     elif message["command"] == "ping":
                         response["payload"] = "pong"
-                else:
-                    response = {"status": "error", "message": "Unknown message format"}
+                    elif message["command"] == "get_stock_data":
+                        try:
+                            # Extract parameters from message
+                            ticker_name = message["payload"].get("ticker")
+                            duration = message["payload"].get("duration", "1d")  # Default to 1 day
+                            interval = message["payload"].get("interval", "2m")   # Default to 2 minutes
+                            
+                            if not ticker_name:
+                                response = {
+                                    "status": "error",
+                                    "message": "Missing ticker parameter"
+                                }
+                            else:
+                                # Get stock data
+                                ticker = yf.Ticker(ticker_name)
+                                hist = ticker.history(period=duration, interval=interval)[['Open', 'High', 'Low', 'Close']]
+                                
+                                # Convert DataFrame to dict for JSON serialization
+                                stock_data = {
+                                    "ticker": ticker_name,
+                                    "duration": duration,
+                                    "interval": interval,
+                                    "data": hist.to_dict(orient='records')
+                                }
+                                
+                                response = {
+                                    "status": "success",
+                                    "stock_data": stock_data
+                                }
+                        except Exception as e:
+                            response = {
+                                "status": "error",
+                                "message": f"Error fetching stock data: {str(e)}"
+                            }
+                    else:
+                        response = {"status": "error", "message": "Unknown command"}
 
                 logging.info(f"[{client_address}] Sending MsgPack: {response}")
                 secure_conn.sendall(packer.pack(response))

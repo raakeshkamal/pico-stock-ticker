@@ -1,47 +1,47 @@
 #include "pico-stock-ticker.hpp"
-#include "tls_client.h"
+#include "ArduinoJson/Strings/JsonString.hpp"
 #include "display.hpp"
-#include <ArduinoJson.h>
-#include <cstdint>
 #include "hardware/rtc.h"
 #include "pico/util/datetime.h"
+#include "tls_client.h"
+#include <ArduinoJson.h>
+#include <cstdint>
+#include <ctime>
+#include <vector>
 
 static const uint8_t cert_ok[] = ROOT_CERT;
 
 static SemaphoreHandle_t http_request_complete_sem = NULL;
 static SemaphoreHandle_t wifi_connected_sem = NULL; // To signal HTTP task
 
-
 volatile uint32_t ulIdleCycleCount = 0UL;
 
-void vApplicationIdleHook( void )
-{
-    ulIdleCycleCount++;
+void vApplicationIdleHook(void) {
+	ulIdleCycleCount++;
 
-    /* Example: Enter a low-power sleep mode.
-     * The specifics of HAL_PWR_EnterSLEEPMode are MCU-dependent.
-     * Ensure interrupts can wake the MCU.
-     */
-    // HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+	/* Example: Enter a low-power sleep mode.
+	 * The specifics of HAL_PWR_EnterSLEEPMode are MCU-dependent.
+	 * Ensure interrupts can wake the MCU.
+	 */
+	// HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
 }
 
-void vApplicationStackOverflowHook( TaskHandle_t xTask, char *pcTaskName )
-{
-    ( void ) pcTaskName;
-    ( void ) xTask;
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+	(void)pcTaskName;
+	(void)xTask;
 
-    taskDISABLE_INTERRUPTS();
-    printf("Stack overflow in task: %s\n", pcTaskName);
-    for( ;; );
+	taskDISABLE_INTERRUPTS();
+	printf("Stack overflow in task: %s\n", pcTaskName);
+	for (;;)
+		;
 }
 
-void vApplicationMallocFailedHook( void )
-{
-    taskDISABLE_INTERRUPTS();
-    printf("Malloc failed!\n");
-    for( ;; );
+void vApplicationMallocFailedHook(void) {
+	taskDISABLE_INTERRUPTS();
+	printf("Malloc failed!\n");
+	for (;;)
+		;
 }
-
 
 // Turn led on or off
 static void pico_set_led(bool led_on) {
@@ -135,267 +135,404 @@ void wifi_task(__unused void *params) {
 	vTaskDelete(NULL);
 }
 
-#define TLS_CLIENT_SERVER        "192.168.0.41"  // Change this to your server's IP or hostname
-#define TLS_CLIENT_PORT          8443         // Server listens on port 8443
-#define TLS_CLIENT_AUTH_TOKEN    "supersecretclienttoken12345abcdef"  // Must match server's CLIENT_AUTH_TOKEN
+#define TLS_CLIENT_SERVER                                                      \
+	"192.168.0.41"           // Change this to your server's IP or hostname
+#define TLS_CLIENT_PORT 8443 // Server listens on port 8443
+#define TLS_CLIENT_AUTH_TOKEN                                                  \
+	"supersecretclienttoken12345abcdef" // Must match server's CLIENT_AUTH_TOKEN
 
 // Buffer for MessagePack encoded messages
-static char message_buffer[1024];  // Larger buffer to hold all messages
+static char message_buffer[1024]; // Larger buffer to hold all messages
 static uint8_t response_buffer[1024];
 
 // Function to generate MessagePack encoded authentication request
-static size_t generate_auth_request(char* buffer, size_t buffer_size) {
-    JsonDocument doc;
-    JsonObject obj = doc.to<JsonObject>();
-    obj["token"] = TLS_CLIENT_AUTH_TOKEN;
-    
-    // Serialize to MessagePack format
-    return serializeMsgPack(doc, buffer, buffer_size);
+static size_t generate_auth_request(char *buffer, size_t buffer_size) {
+	JsonDocument doc;
+	JsonObject obj = doc.to<JsonObject>();
+	obj["token"] = TLS_CLIENT_AUTH_TOKEN;
+
+	// Serialize to MessagePack format
+	return serializeMsgPack(doc, buffer, buffer_size);
 }
 
 // Function to generate MessagePack encoded command request
-static size_t generate_command_request(char* buffer, size_t buffer_size, const char* command, JsonVariant payload = JsonVariant()) {
-    JsonDocument doc;
-    JsonObject obj = doc.to<JsonObject>();
-    obj["command"] = command;
-    if (!payload.isNull()) {
-        obj["payload"] = payload;
-    }
-    
-    // Serialize to MessagePack format
-    return serializeMsgPack(doc, buffer, buffer_size);
+static size_t generate_command_request(char *buffer, size_t buffer_size,
+                                       const char *command,
+                                       JsonVariant payload = JsonVariant()) {
+	JsonDocument doc;
+	JsonObject obj = doc.to<JsonObject>();
+	obj["command"] = command;
+	if (!payload.isNull()) {
+		obj["payload"] = payload;
+	}
+
+	// Serialize to MessagePack format
+	return serializeMsgPack(doc, buffer, buffer_size);
+}
+
+// Error codes for command sending
+enum CommandError {
+	CMD_SUCCESS = 0,
+	CMD_SEND_ERROR = -1,
+	CMD_RECV_ERROR = -2,
+	CMD_DESERIALIZE_ERROR = -3
+};
+
+// Generic function to send a command and receive response
+static CommandError send_command(TLS_CLIENT_HANDLE handle, const char *command,
+                                 JsonVariant payload, uint8_t *recv_buffer,
+                                 size_t recv_buffer_size,
+                                 JsonDocument &response_doc,
+                                 char *message_buffer,
+                                 size_t message_buffer_size) {
+	// Generate and send command request
+	size_t cmd_len = generate_command_request(
+	    message_buffer, message_buffer_size, command, payload);
+	message_buffer[cmd_len] = '\0';
+
+	printf("Sending command '%s' (%d bytes)\n", command, cmd_len);
+
+	int recv_len =
+	    tls_client_send_and_recv(handle, (uint8_t *)message_buffer, cmd_len,
+	                             recv_buffer, recv_buffer_size,
+	                             5000 // 5 second timeout per command
+	    );
+
+	if (recv_len <= 0) {
+		printf("Error receiving command response: %d\n", recv_len);
+		return CMD_RECV_ERROR;
+	}
+
+	recv_buffer[recv_len] = '\0';
+
+	// Deserialize the MessagePack response
+	DeserializationError error =
+	    deserializeMsgPack(response_doc, recv_buffer, recv_len);
+	message_buffer[0] = '\0';
+
+	if (error) {
+		printf("MessagePack deserialization failed: %s\n", error.c_str());
+		return CMD_DESERIALIZE_ERROR;
+	}
+
+	printf("Deserialized response:\n");
+	serializeJsonPretty(response_doc, message_buffer, message_buffer_size);
+	printf("%s\n", message_buffer);
+
+	return CMD_SUCCESS;
+}
+
+// Function to parse server time string and set RTC time
+static bool parse_and_set_rtc_time(const char *time_str) {
+	// Expected format: "YYYY-MM-DD HH:MM:SS TZ"
+	int year, month, day, hour, min, sec;
+	char tz[4];
+
+	// Parse the time string
+	if (sscanf(time_str, "%d-%d-%d %d:%d:%d %3s", &year, &month, &day, &hour,
+	           &min, &sec, tz) != 7) {
+		printf("Failed to parse time string: %s\n", time_str);
+		return false;
+	}
+
+	// Create datetime_t struct
+	datetime_t t = {
+	    .year = (int16_t)year,
+	    .month = (int8_t)month,
+	    .day = (int8_t)day,
+	    .hour = (int8_t)hour,
+	    .min = (int8_t)min,
+	    .sec = (int8_t)sec,
+	};
+
+	// Set the RTC time
+	if (!rtc_set_datetime(&t)) {
+		printf("Failed to set RTC time\n");
+		return false;
+	}
+
+	printf("Successfully set RTC time to: %04d-%02d-%02d %02d:%02d:%02d %s\n",
+	       t.year, t.month, t.day, t.hour, t.min, t.sec, tz);
+	return true;
+}
+
+// Function to parse stock data from response
+static bool parse_stock_data(JsonDocument &response_doc,
+                             StockData &stock_data) {
+	if (!response_doc["stock_data"].is<JsonObject>()) {
+		printf("No stock data in response\n");
+		return false;
+	}
+
+	const JsonObject stock_data_obj = response_doc["stock_data"];
+	const JsonArray data_array = stock_data_obj["data"];
+
+	// Get the ticker symbol
+	const char *ticker = stock_data_obj["ticker"];
+	strncpy(stock_data.symbol, ticker, sizeof(stock_data.symbol) - 1);
+	stock_data.symbol[sizeof(stock_data.symbol) - 1] = '\0';
+
+	// Get the duration
+	const char *duration = stock_data_obj["duration"];
+	strncpy(stock_data.duration, duration, sizeof(stock_data.duration) - 1);
+	stock_data.duration[sizeof(stock_data.duration) - 1] = '\0';
+
+	// Clear existing history
+	stock_data.history_len = 0;
+
+	// Process each data point
+	for (const JsonObject &data_point : data_array) {
+		if (stock_data.history_len >= 30) { // Maximum history size
+			break;
+		}
+
+		OHLC &ohlc = stock_data.history[stock_data.history_len];
+		ohlc.open = data_point["Open"];
+		ohlc.high = data_point["High"];
+		ohlc.low = data_point["Low"];
+		ohlc.close = data_point["Close"];
+
+		// Store timestamp
+		const char *timestamp_str = data_point["Date"];
+		strncpy(stock_data.timestamp, timestamp_str,
+		        sizeof(stock_data.timestamp) - 1);
+		stock_data.timestamp[sizeof(stock_data.timestamp) - 1] = '\0';
+
+		// Update current price and other metrics
+		if (stock_data.history_len == 0) {
+			stock_data.open_price = ohlc.open;
+			stock_data.high_price = ohlc.high;
+			stock_data.low_price = ohlc.low;
+		} else {
+			stock_data.high_price = std::max(stock_data.high_price, ohlc.high);
+			stock_data.low_price = std::min(stock_data.low_price, ohlc.low);
+		}
+
+		stock_data.current_price = ohlc.close;
+		stock_data.history_len++;
+	}
+
+	// Calculate price changes
+	if (stock_data.history_len > 0) {
+		stock_data.price_change =
+		    stock_data.current_price - stock_data.open_price;
+		stock_data.percent_change =
+		    (stock_data.price_change / stock_data.open_price) * 100.0f;
+	}
+
+	return stock_data.history_len > 0;
 }
 
 void tls_client_task(__unused void *params) {
-    printf("tls_client_task starts\n");
-    xSemaphoreTake(wifi_connected_sem, portMAX_DELAY);
-    printf("WiFi connected, starting TLS client test\n");
+	printf("tls_client_task starts\n");
+	xSemaphoreTake(wifi_connected_sem, portMAX_DELAY);
+	printf("WiFi connected, starting TLS client test\n");
 
-    while (true) {
-        static int last_core_id = -1;
-        if (portGET_CORE_ID() != last_core_id) {
-            last_core_id = portGET_CORE_ID();
-            printf("tls client task is on core %d\n", last_core_id);
-        }
+	while (true) {
+		static int last_core_id = -1;
+		if (portGET_CORE_ID() != last_core_id) {
+			last_core_id = portGET_CORE_ID();
+			printf("tls client task is on core %d\n", last_core_id);
+		}
 
-        // Initialize and connect to the server
-        TLS_CLIENT_HANDLE handle = tls_client_init_and_connect(
-            TLS_CLIENT_SERVER,
-            TLS_CLIENT_PORT,
-            cert_ok,
-            sizeof(cert_ok)
-        );
+		// Initialize and connect to the server
+		TLS_CLIENT_HANDLE handle = tls_client_init_and_connect(
+		    TLS_CLIENT_SERVER, TLS_CLIENT_PORT, cert_ok, sizeof(cert_ok));
 
-        if (!handle) {
-            printf("Failed to connect to TLS server\n");
-            vTaskDelay(pdMS_TO_TICKS(5000)); // Wait before retry
-            continue;
-        }
+		if (!handle) {
+			printf("Failed to connect to TLS server\n");
+			vTaskDelay(pdMS_TO_TICKS(5000)); // Wait before retry
+			continue;
+		}
 
-        // First send authentication request
-        size_t auth_len = generate_auth_request(message_buffer, sizeof(message_buffer));
+		// First send authentication request
+		size_t auth_len =
+		    generate_auth_request(message_buffer, sizeof(message_buffer));
 		message_buffer[auth_len] = '\0';
 
-        printf("Sending auth request (%d bytes)\n", auth_len);
+		printf("Sending auth request (%d bytes)\n", auth_len);
 
-        // Send auth request and receive response
-        int recv_len = tls_client_send_and_recv(
-            handle,
-            (uint8_t*)message_buffer,
-            auth_len,
-            response_buffer,
-            sizeof(response_buffer),
-            5000  // 5 second timeout for auth
-        );
+		// Send auth request and receive response
+		int recv_len = tls_client_send_and_recv(
+		    handle, (uint8_t *)message_buffer, auth_len, response_buffer,
+		    sizeof(response_buffer),
+		    5000 // 5 second timeout for auth
+		);
 
-        if (recv_len <= 0) {
-            printf("Error receiving auth response: %d\n", recv_len);
-            tls_client_close(handle);
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            continue;
-        }
+		if (recv_len <= 0) {
+			printf("Error receiving auth response: %d\n", recv_len);
+			tls_client_close(handle);
+			vTaskDelay(pdMS_TO_TICKS(5000));
+			continue;
+		}
 
-        response_buffer[recv_len] = '\0';
-        // printf("Auth response received (%d bytes): %s\n", recv_len, response);
+		response_buffer[recv_len] = '\0';
+		// printf("Auth response received (%d bytes): %s\n", recv_len,
+		// response);
 
-        // Deserialize the MessagePack response
-        JsonDocument response_doc;
-        DeserializationError error = deserializeMsgPack(response_doc, response_buffer, recv_len);
-        message_buffer[0] = '\0';
+		// Deserialize the MessagePack response
+		JsonDocument response_doc;
+		DeserializationError error =
+		    deserializeMsgPack(response_doc, response_buffer, recv_len);
+		message_buffer[0] = '\0';
 
-        if (error) {
-            printf("MessagePack deserialization failed: %s\n", error.c_str());
-        } else {
-            printf("Deserialized response:\n");
-            serializeJsonPretty(response_doc, message_buffer, sizeof(message_buffer));
-            printf("%s\n", message_buffer);
-        }
-        response_doc.clear();
+		if (error) {
+			printf("MessagePack deserialization failed: %s\n", error.c_str());
+		} else {
+			printf("Deserialized response:\n");
+			serializeJsonPretty(response_doc, message_buffer,
+			                    sizeof(message_buffer));
+			printf("%s\n", message_buffer);
+		}
+		response_doc.clear();
 
-        // Prepare array of commands to send
-        struct Command {
-            const char* name;
-            JsonVariant payload;
-        };
+		// Prepare array of commands to send
+		struct Command {
+			const char *name;
+			JsonVariant payload;
+		};
 
-        Command commands[] = {
-            {"ping", JsonVariant()},
-            {"get_time", JsonVariant()}
-        };
+		Command commands[] = {{"ping", JsonVariant()},
+		                      {"get_time", JsonVariant()}};
 
-        // Send each command one by one
-        for (const auto& cmd : commands) {
-            size_t cmd_len = generate_command_request(message_buffer, sizeof(message_buffer), cmd.name, cmd.payload);
-			message_buffer[cmd_len] = '\0';
+		// Send each command one by one
+		for (const auto &cmd : commands) {
+			CommandError err =
+			    send_command(handle, cmd.name, cmd.payload, response_buffer,
+			                 sizeof(response_buffer), response_doc,
+			                 message_buffer, sizeof(message_buffer));
 
-            printf("Sending command '%s' (%d bytes)\n", cmd.name, cmd_len);
+			if (err != CMD_SUCCESS) {
+				printf("Command '%s' failed with error %d\n", cmd.name, err);
+				break;
+			}
 
-            recv_len = tls_client_send_and_recv(
-                handle,
-                (uint8_t*)message_buffer,
-                cmd_len,
-                response_buffer,
-                sizeof(response_buffer),
-                5000  // 5 second timeout per command
-            );
+			// Handle get_time command response
+			if (strcmp(cmd.name, "get_time") == 0) {
+				const char *server_time = response_doc["server_time"];
+				if (server_time) {
+					if (!parse_and_set_rtc_time(server_time)) {
+						printf("Failed to set RTC time from server response\n");
+					}
+				} else {
+					printf("No server_time in response\n");
+				}
+			}
 
-            if (recv_len > 0) {
-                response_buffer[recv_len] = '\0';
-                // printf("Command response received (%d bytes): %s\n", recv_len, response);
-            } else {
-                printf("Error receiving command response: %d\n", recv_len);
-                break;
-            }
+			// Handle get_stock_data command response
+			if (strcmp(cmd.name, "get_stock_data") == 0) {
+			}
 
-            // Deserialize the MessagePack response
-            error = deserializeMsgPack(response_doc, response_buffer, recv_len);
-            message_buffer[0] = '\0';
+			response_doc.clear();
+			// Small delay between commands
+			vTaskDelay(pdMS_TO_TICKS(100));
+		}
 
-            if (error) {
-                printf("MessagePack deserialization failed: %s\n", error.c_str());
-            } else {
-                printf("Deserialized response:\n");
-                serializeJsonPretty(response_doc, message_buffer, sizeof(message_buffer));
-                printf("%s\n", message_buffer);
-            }
-            response_doc.clear();
+		// Send the get_stock_data command separately
+		JsonDocument doc;
+		doc["command"] = "get_stock_data";
+		doc["ticker"] = "AAPL";
+		doc["duration"] = "1d";
+		doc["interval"] = "1h";
 
-            // Small delay between commands
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
+		CommandError err =
+		    send_command(handle, "get_stock_data", doc, response_buffer,
+		                 sizeof(response_buffer), response_doc, message_buffer,
+		                 sizeof(message_buffer));
 
-        // Send the some_other_data command separately
-        JsonDocument cmd_doc;
-        JsonArray arr = cmd_doc.to<JsonArray>();
-        arr.add(1);
-        arr.add(2);
-        arr.add("test");
+		if (err != CMD_SUCCESS) {
+			printf("Command 'get_stock_data' failed with error %d\n", err);
+		}
+		StockData stock_data;
+		initialize_stock_data(stock_data); // Initialize with default values
 
-        size_t cmd_len = generate_command_request(message_buffer, sizeof(message_buffer), "some_other_data", arr);
-        message_buffer[cmd_len] = '\0';
+		if (parse_stock_data(response_doc, stock_data)) {
+			printf("Received %d data points for %s\n", stock_data.history_len,
+			       stock_data.symbol);
 
-        printf("Sending command 'some_other_data' (%d bytes)\n", cmd_len);
+			// Process the stock data as needed
+			printf("Current Price: %.2f, Change: %.2f (%.2f%%)\n",
+			       stock_data.current_price, stock_data.price_change,
+			       stock_data.percent_change);
 
-        recv_len = tls_client_send_and_recv(
-            handle,
-            (uint8_t*)message_buffer,
-            cmd_len,
-            response_buffer,
-            sizeof(response_buffer),
-            5000  // 5 second timeout per command
-        );
+			// Update the display with the new data
+			update_display(stock_data);
+		} else {
+			printf("Failed to parse stock data\n");
+		}
+		response_doc.clear();
 
-        if (recv_len > 0) {
-            response_buffer[recv_len] = '\0';
-            // printf("Command response received (%d bytes): %s\n", recv_len, response);
-        } else {
-            printf("Error receiving command response: %d\n", recv_len);
-        }
+		// Close the connection
+		tls_client_close(handle);
 
-        // Deserialize the MessagePack response
-        error = deserializeMsgPack(response_doc, response_buffer, recv_len);
-        message_buffer[0] = '\0';
-
-        if (error) {
-            printf("MessagePack deserialization failed: %s\n", error.c_str());
-        } else {
-            printf("Deserialized response:\n");
-            serializeJsonPretty(response_doc, message_buffer, sizeof(message_buffer));
-            printf("%s\n", message_buffer);
-        }
-        response_doc.clear();
-
-        // Close the connection
-        tls_client_close(handle);
-
-        // Wait before next attempt
-        vTaskDelay(pdMS_TO_TICKS(5000)); // 5 second delay between attempts
-    }
-    vTaskDelete(NULL);
+		// Wait before next attempt
+		vTaskDelay(pdMS_TO_TICKS(5000)); // 5 second delay between attempts
+	}
+	vTaskDelete(NULL);
 }
 
 void main_task(__unused void *params) {
-    // Initialise the Wi-Fi chip
-    if (cyw43_arch_init()) {
-        printf("Wi-Fi init failed\n");
-        return;
-    }
+	// Initialise the Wi-Fi chip
+	if (cyw43_arch_init()) {
+		printf("Wi-Fi init failed\n");
+		return;
+	}
 
-    // Create semaphores before starting tasks that use them
-    http_request_complete_sem = xSemaphoreCreateBinary();
-    if (http_request_complete_sem == NULL) {
-        printf("Failed to create http_request_complete_sem\n");
-    }
+	// Create semaphores before starting tasks that use them
+	http_request_complete_sem = xSemaphoreCreateBinary();
+	if (http_request_complete_sem == NULL) {
+		printf("Failed to create http_request_complete_sem\n");
+	}
 
-    wifi_connected_sem = xSemaphoreCreateBinary();
-    if (wifi_connected_sem == NULL) {
-        printf("Failed to create wifi_connected_sem\n");
-    }
+	wifi_connected_sem = xSemaphoreCreateBinary();
+	if (wifi_connected_sem == NULL) {
+		printf("Failed to create wifi_connected_sem\n");
+	}
 
-    // Initialize display
-    initialize_display();
+	// Initialize display
+	initialize_display();
 
-    // Create stock data structure
-    StockData stock_data;
-    initialize_stock_data(stock_data);
+	// Create stock data structure
+	StockData stock_data;
+	initialize_stock_data(stock_data);
 
-    // start the led blinking
-    xTaskCreate(blink_task, "BlinkThread", BLINK_TASK_STACK_SIZE, NULL,
-                BLINK_TASK_PRIORITY, NULL);
-    xTaskCreate(wifi_task, "WiFiThread", WIFI_TASK_STACK_SIZE, NULL,
-                WIFI_TASK_PRIORITY, NULL);
-    xTaskCreate(tls_client_task, "TLSClientThread", HTTP_GET_TASK_STACK_SIZE, NULL,
-                HTTP_GET_TASK_PRIORITY, NULL);
+	// start the led blinking
+	xTaskCreate(blink_task, "BlinkThread", BLINK_TASK_STACK_SIZE, NULL,
+	            BLINK_TASK_PRIORITY, NULL);
+	xTaskCreate(wifi_task, "WiFiThread", WIFI_TASK_STACK_SIZE, NULL,
+	            WIFI_TASK_PRIORITY, NULL);
+	xTaskCreate(tls_client_task, "TLSClientThread", HTTP_GET_TASK_STACK_SIZE,
+	            NULL, HTTP_GET_TASK_PRIORITY, NULL);
 
-    while (true) {
-        static int last_core_id = -1;
-        if (portGET_CORE_ID() != last_core_id) {
-            last_core_id = portGET_CORE_ID();
-            printf("main task is on core %d\n", last_core_id);
-        }
+	while (true) {
+		static int last_core_id = -1;
+		if (portGET_CORE_ID() != last_core_id) {
+			last_core_id = portGET_CORE_ID();
+			printf("main task is on core %d\n", last_core_id);
+		}
 
-        // Update the display with current stock data
-        update_display(stock_data);
+		// Update the display with current stock data
+		update_display(stock_data);
 
-        // Handle button inputs
-        if (button_a.raw()) {
-            // TODO: Implement button A functionality
-        }
-        if (button_b.raw()) {
-            // TODO: Implement button B functionality
-        }
-        if (button_x.raw()) {
-            // TODO: Implement button X functionality
-        }
-        if (button_y.raw()) {
-            // TODO: Implement button Y functionality
-        }
+		// Handle button inputs
+		if (button_a.raw()) {
+			// TODO: Implement button A functionality
+		}
+		if (button_b.raw()) {
+			// TODO: Implement button B functionality
+		}
+		if (button_x.raw()) {
+			// TODO: Implement button X functionality
+		}
+		if (button_y.raw()) {
+			// TODO: Implement button Y functionality
+		}
 
-        vTaskDelay(10);
-    }
+		vTaskDelay(10);
+	}
 
-    cyw43_arch_deinit();
-    vTaskDelete(NULL);
+	cyw43_arch_deinit();
+	vTaskDelete(NULL);
 }
 
 void vLaunch(void) {
@@ -414,21 +551,19 @@ int main(void) {
 	const char *rtos_name;
 	rtos_name = "FreeRTOS SMP";
 
-    // 1. Create a datetime_t struct to hold the time
-    datetime_t t = {
-        .year = 2025,
-        .month = 6,
-        .day = 6,
-        .dotw = 5, // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
-        .hour = 12,
-        .min = 30,
-        .sec = 15
-    };
+	// 1. Create a datetime_t struct to hold the time
+	datetime_t t = {.year = 2025,
+	                .month = 6,
+	                .day = 6,
+	                .dotw =
+	                    5, // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
+	                .hour = 12,
+	                .min = 30,
+	                .sec = 15};
 
-    // 2. Initialize the RTC and set the time
-    rtc_init();
-    rtc_set_datetime(&t);
-    
+	// 2. Initialize the RTC and set the time
+	rtc_init();
+	rtc_set_datetime(&t);
 
 	printf("Starting %s on both cores:\n", rtos_name);
 	vLaunch();
